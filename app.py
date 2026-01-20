@@ -8,7 +8,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v19")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v20.1")
 
 # --- Google Sheets 接続設定 ---
 def connect_to_gsheet():
@@ -126,7 +126,7 @@ def remove_point(winner):
 #  UI
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v19")
+    st.title("🏐 Analyst Pro v20.1")
     app_mode = st.radio("メニュー", ["📊 試合入力", "👤 チーム管理"])
     st.markdown("---")
     
@@ -137,6 +137,25 @@ with st.sidebar:
         op_team_name = st.selectbox("相手チーム", other_teams, index=0) if other_teams else "未設定"
     else:
         my_team_name = "未設定"; op_team_name = "未設定"
+    
+    st.markdown("---")
+    
+    # ★ここを修正：試合終了時に自動保存するロジックを追加
+    if app_mode == "📊 試合入力":
+        if st.button("🏁 試合終了 (保存してリセット)", help="未保存データを保存し、スコアとローテを初期化します"):
+            # 1. 未保存データがあれば保存する
+            if st.session_state.match_data:
+                df = pd.DataFrame(st.session_state.match_data)
+                save_match_data_to_sheet(df)
+                st.toast("未保存データを自動保存しました")
+            
+            # 2. リセット処理
+            st.session_state.game_state = {"my_score": 0, "op_score": 0, "serve_rights": "My Team", "my_rot": 1, "op_rot": 1}
+            st.session_state.match_data = [] # クリア
+            st.session_state.my_service_order = [] # スタメンクリア
+            
+            st.success("試合データを保存し、リセットしました。お疲れ様でした！")
+            st.rerun()
 
 # --- モード1：チーム管理 ---
 if app_mode == "👤 チーム管理":
@@ -203,7 +222,6 @@ elif app_mode == "📊 試合入力":
             set_no = st.number_input("Set", 1, 5, 1)
 
     with col_mn:
-        # スタメン設定画面
         if not st.session_state.my_service_order:
             st.info("🏁 スターティングメンバー (Lineup) 設定")
             mp = sort_players_by_number(list(st.session_state.players_db[my_team_name].keys())) if my_team_name!="未設定" else []
@@ -280,7 +298,6 @@ elif app_mode == "📊 試合入力":
             attack_zones = ["レフト(L)", "センター(C)", "ライト(R)", "レフトバック(LB)", "センターバック(CB)", "ライトバック(RB)"]
             
             st.markdown("##### 1. Reception")
-            # ★選択肢を追加しました
             recep = st.radio("Pass", ["Aパス","Bパス","Cパス", "失敗 (エース)", "相手サーブミス", "その他"], horizontal=True, label_visibility="collapsed")
             
             st.markdown("##### 2. Attack Detail")
@@ -313,7 +330,6 @@ elif app_mode == "📊 試合入力":
                     "X": coords["x"], "Y": coords["y"]
                 }
                 
-                # ★ロジック追加
                 if recep == "失敗 (エース)":
                     add_point("Opponent")
                     st.toast("Ace! (Opponent Point)")
@@ -323,7 +339,6 @@ elif app_mode == "📊 試合入力":
                     add_point("My Team")
                     st.toast("Lucky! (Service Error)")
                     rec["Result"] = "Opp Service Error"
-                    # 相手ミスの場合も記録は残すが、打った選手等は意味を持たないのでそのまま
                     st.session_state.match_data.append(rec)
                 else:
                     st.session_state.match_data.append(rec)
@@ -348,12 +363,22 @@ elif app_mode == "📊 試合入力":
                     if sub_in: st.session_state.my_service_order[int(sub_pos[1])-1] = sub_in; st.rerun()
 
     with col_lg:
+        st.header("3. Log")
+        
+        if st.session_state.match_data:
+            if st.button("↩️ 1つ戻る (Undo)"):
+                st.session_state.match_data.pop()
+                st.warning("直前の記録を削除しました")
+                st.rerun()
+
         if st.session_state.match_data:
             df = pd.DataFrame(st.session_state.match_data)
             cols_to_show = ["MyScore", "Pass", "Player", "Result"]
             valid_cols = [c for c in cols_to_show if c in df.columns]
             st.dataframe(df[valid_cols].iloc[::-1], height=300, hide_index=True)
-            if st.button("☁️ Google Sheetsに保存"):
+            
+            if st.button("💾 データ送信 (保存してリストをクリア)"):
                 save_match_data_to_sheet(df)
-                st.success("クラウド保存完了！")
+                st.success("クラウドに追記保存しました")
                 st.session_state.match_data = []
+
