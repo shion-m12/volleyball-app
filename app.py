@@ -282,3 +282,4 @@ elif app_mode == "📊 試合入力":
                 st.success("クラウド保存完了！")
                 st.session_state.match_data = []
 
+
