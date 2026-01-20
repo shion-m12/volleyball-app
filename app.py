@@ -8,7 +8,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v17.2")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v19")
 
 # --- Google Sheets 接続設定 ---
 def connect_to_gsheet():
@@ -126,7 +126,7 @@ def remove_point(winner):
 #  UI
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v17.2")
+    st.title("🏐 Analyst Pro v19")
     app_mode = st.radio("メニュー", ["📊 試合入力", "👤 チーム管理"])
     st.markdown("---")
     
@@ -203,32 +203,60 @@ elif app_mode == "📊 試合入力":
             set_no = st.number_input("Set", 1, 5, 1)
 
     with col_mn:
+        # スタメン設定画面
         if not st.session_state.my_service_order:
-            st.info("Lineup設定")
+            st.info("🏁 スターティングメンバー (Lineup) 設定")
             mp = sort_players_by_number(list(st.session_state.players_db[my_team_name].keys())) if my_team_name!="未設定" else []
             op = sort_players_by_number(list(st.session_state.players_db[op_team_name].keys())) if op_team_name!="未設定" else []
-            c1, c2 = st.columns(2)
-            with c1:
-                st.caption("自チーム")
-                ms = [st.selectbox(f"P{i+1}", mp, key=f"m{i}") for i in range(6)]
-                ml = st.selectbox("L", ["なし"]+mp, key="ml")
-            with c2:
-                st.caption("相手チーム")
-                if op: os_ = [st.selectbox(f"P{i+1}", op, key=f"o{i}") for i in range(6)]; ol = st.selectbox("L", ["なし"]+op, key="ol")
-                else: os_=[]; ol="なし"
             
+            c_m_bk, c_m_fr, c_net, c_o_fr, c_o_bk = st.columns([1.5, 1.5, 0.2, 1.5, 1.5])
+            with c_net: st.markdown("<div style='height:300px; border-left: 3px dashed #888; margin-left: 50%;'></div>", unsafe_allow_html=True)
+
+            with c_m_bk:
+                st.caption(f"{my_team_name} 後衛")
+                m5 = st.selectbox("P5 (BL)", mp, key="m5", index=4 if len(mp)>4 else 0)
+                m6 = st.selectbox("P6 (BC)", mp, key="m6", index=5 if len(mp)>5 else 0)
+                m1 = st.selectbox("P1 (BR/Serve)", mp, key="m1", index=0)
+            with c_m_fr:
+                st.caption("前衛 (Net)")
+                m4 = st.selectbox("P4 (FL)", mp, key="m4", index=3 if len(mp)>3 else 0)
+                m3 = st.selectbox("P3 (FC)", mp, key="m3", index=2 if len(mp)>2 else 0)
+                m2 = st.selectbox("P2 (FR)", mp, key="m2", index=1 if len(mp)>1 else 0)
+
+            with c_o_fr:
+                st.caption(f"前衛 (Net)")
+                if op:
+                    o2 = st.selectbox("P2 (FR)", op, key="o2", index=1 if len(op)>1 else 0)
+                    o3 = st.selectbox("P3 (FC)", op, key="o3", index=2 if len(op)>2 else 0)
+                    o4 = st.selectbox("P4 (FL)", op, key="o4", index=3 if len(op)>3 else 0)
+                else: o2=o3=o4=None; st.write("未登録")
+            with c_o_bk:
+                st.caption(f"{op_team_name} 後衛")
+                if op:
+                    o1 = st.selectbox("P1 (BR/Serve)", op, key="o1", index=0)
+                    o6 = st.selectbox("P6 (BC)", op, key="o6", index=5 if len(op)>5 else 0)
+                    o5 = st.selectbox("P5 (BL)", op, key="o5", index=4 if len(op)>4 else 0)
+                else: o1=o6=o5=None; st.write("未登録")
+
             st.markdown("---")
-            st.caption("最初のサーブ権を選択")
+            c_lib1, c_lib2 = st.columns(2)
+            with c_lib1: ml = st.selectbox(f"リベロ ({my_team_name})", ["なし"]+mp, key="ml")
+            with c_lib2: ol = st.selectbox(f"リベロ ({op_team_name})", ["なし"]+op, key="ol") if op else "なし"
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.caption("最初のサーブ権")
             first_srv_label = st.radio("First Serve", [my_team_name, op_team_name], horizontal=True, label_visibility="collapsed")
             first_srv_key = "My Team" if first_srv_label == my_team_name else "Opponent"
             
-            if st.button("Start Match", type="primary"):
-                st.session_state.my_service_order = ms; st.session_state.op_service_order = os_
+            if st.button("試合開始 (Lineup確定)", type="primary"):
+                st.session_state.my_service_order = [m1, m2, m3, m4, m5, m6]
+                st.session_state.op_service_order = [o1, o2, o3, o4, o5, o6] if op else []
                 st.session_state.my_libero = ml; st.session_state.op_libero = ol
                 st.session_state.game_state["serve_rights"] = first_srv_key
                 st.rerun()
+
+        # --- 試合中 (入力画面) ---
         else:
-            # ★ここに移動しました！ (入力画面の一番上)
             with st.expander("🛠 点数・ローテ手動修正", expanded=False):
                 c_m_all, c_o_all = st.columns(2)
                 with c_m_all:
@@ -236,8 +264,8 @@ elif app_mode == "📊 試合入力":
                     c_m1, c_m2, c_m3, c_m4 = st.columns(4)
                     if c_m1.button("＋1", key="m_p1"): add_point("My Team"); st.rerun()
                     if c_m2.button("－1", key="m_m1"): remove_point("My Team"); st.rerun()
-                    if c_m3.button("次R", key="m_r_next", help="ローテを1つ進める"): rotate_team("my"); st.rerun()
-                    if c_m4.button("前R", key="m_r_prev", help="ローテを1つ戻す"): rotate_team_reverse("my"); st.rerun()
+                    if c_m3.button("次R", key="m_r_next"): rotate_team("my"); st.rerun()
+                    if c_m4.button("前R", key="m_r_prev"): rotate_team_reverse("my"); st.rerun()
                 with c_o_all:
                     st.caption(f"▼ {op_team_name}")
                     c_o1, c_o2, c_o3, c_o4 = st.columns(4)
@@ -246,14 +274,14 @@ elif app_mode == "📊 試合入力":
                     if c_o3.button("次R", key="o_r_next"): rotate_team("op"); st.rerun()
                     if c_o4.button("前R", key="o_r_prev"): rotate_team_reverse("op"); st.rerun()
 
-            # --- 以下、通常の入力エリア ---
             active = list(st.session_state.my_service_order)
             if st.session_state.my_libero!="なし": active.append(st.session_state.my_libero)
             active_sorted = sort_players_by_number(active)
             attack_zones = ["レフト(L)", "センター(C)", "ライト(R)", "レフトバック(LB)", "センターバック(CB)", "ライトバック(RB)"]
             
             st.markdown("##### 1. Reception")
-            recep = st.radio("Pass", ["Aパス","Bパス","Cパス", "失敗 (エース)"], horizontal=True, label_visibility="collapsed")
+            # ★選択肢を追加しました
+            recep = st.radio("Pass", ["Aパス","Bパス","Cパス", "失敗 (エース)", "相手サーブミス", "その他"], horizontal=True, label_visibility="collapsed")
             
             st.markdown("##### 2. Attack Detail")
             c_set, c_zone = st.columns(2)
@@ -285,10 +313,17 @@ elif app_mode == "📊 試合入力":
                     "X": coords["x"], "Y": coords["y"]
                 }
                 
+                # ★ロジック追加
                 if recep == "失敗 (エース)":
                     add_point("Opponent")
                     st.toast("Ace! (Opponent Point)")
                     rec["Result"] = "Rec Error" 
+                    st.session_state.match_data.append(rec)
+                elif recep == "相手サーブミス":
+                    add_point("My Team")
+                    st.toast("Lucky! (Service Error)")
+                    rec["Result"] = "Opp Service Error"
+                    # 相手ミスの場合も記録は残すが、打った選手等は意味を持たないのでそのまま
                     st.session_state.match_data.append(rec)
                 else:
                     st.session_state.match_data.append(rec)
@@ -322,7 +357,3 @@ elif app_mode == "📊 試合入力":
                 save_match_data_to_sheet(df)
                 st.success("クラウド保存完了！")
                 st.session_state.match_data = []
-
-
-
-
