@@ -7,24 +7,31 @@ import re
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v20.1")
+# --- 設定 (これは必ず最初に書く必要があります) ---
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v20.2")
 
 # --- Google Sheets 接続設定 ---
 def connect_to_gsheet():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
     
+    # Secretsから認証情報を取得
+    try:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+    except Exception as e:
+        st.error(f"認証エラー: Secretsの設定を確認してください。詳細: {e}")
+        st.stop()
+    
+    # スプレッドシートID
     SPREADSHEET_ID = "14o1wNqQIrJPy9IAuQ7PSCwP6NyA4O5dZrn_FmFoSqLQ"
     
     try:
         sheet = client.open_by_key(SPREADSHEET_ID)
         return sheet
     except gspread.exceptions.APIError:
-        st.error("エラー：スプレッドシートが見つかりません。")
+        st.error("エラー：スプレッドシートが見つかりません。IDが正しいか確認してください。")
         st.stop()
 
 # --- データ読み書き関数 ---
@@ -123,10 +130,10 @@ def remove_point(winner):
         if gs["op_score"] > 0: gs["op_score"] -= 1
 
 # ==========================================
-#  UI
+#  UI (サイドバー)
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v20.1")
+    st.title("🏐 Analyst Pro v20.2")
     app_mode = st.radio("メニュー", ["📊 試合入力", "👤 チーム管理"])
     st.markdown("---")
     
@@ -140,22 +147,26 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # ★ここを修正：試合終了時に自動保存するロジックを追加
+    # 試合終了ボタン (試合入力モードのみ表示)
     if app_mode == "📊 試合入力":
         if st.button("🏁 試合終了 (保存してリセット)", help="未保存データを保存し、スコアとローテを初期化します"):
-            # 1. 未保存データがあれば保存する
+            # 自動保存処理
             if st.session_state.match_data:
                 df = pd.DataFrame(st.session_state.match_data)
                 save_match_data_to_sheet(df)
                 st.toast("未保存データを自動保存しました")
             
-            # 2. リセット処理
+            # リセット処理
             st.session_state.game_state = {"my_score": 0, "op_score": 0, "serve_rights": "My Team", "my_rot": 1, "op_rot": 1}
-            st.session_state.match_data = [] # クリア
+            st.session_state.match_data = [] # データクリア
             st.session_state.my_service_order = [] # スタメンクリア
             
-            st.success("試合データを保存し、リセットしました。お疲れ様でした！")
+            st.success("試合データを保存し、リセットしました。")
             st.rerun()
+
+# ==========================================
+#  UI (メイン画面)
+# ==========================================
 
 # --- モード1：チーム管理 ---
 if app_mode == "👤 チーム管理":
@@ -202,7 +213,7 @@ if app_mode == "👤 チーム管理":
 # --- モード2：試合入力 ---
 elif app_mode == "📊 試合入力":
     try: image = Image.open("court.png")
-    except: st.error("画像エラー"); st.stop()
+    except: st.error("画像エラー：'court.png' が見つかりません。"); st.stop()
         
     col_sc, col_mn, col_lg = st.columns([0.8, 1.2, 0.8])
     with col_sc:
@@ -222,6 +233,7 @@ elif app_mode == "📊 試合入力":
             set_no = st.number_input("Set", 1, 5, 1)
 
     with col_mn:
+        # スタメン設定画面
         if not st.session_state.my_service_order:
             st.info("🏁 スターティングメンバー (Lineup) 設定")
             mp = sort_players_by_number(list(st.session_state.players_db[my_team_name].keys())) if my_team_name!="未設定" else []
@@ -381,4 +393,3 @@ elif app_mode == "📊 試合入力":
                 save_match_data_to_sheet(df)
                 st.success("クラウドに追記保存しました")
                 st.session_state.match_data = []
-
