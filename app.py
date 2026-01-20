@@ -8,7 +8,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v16.1")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v17")
 
 # --- Google Sheets 接続設定 ---
 def connect_to_gsheet():
@@ -21,16 +21,16 @@ def connect_to_gsheet():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     
-    # ここはあなたのIDのままでOKです！
+    # あなたのID (v16.1で設定したもの)
     SPREADSHEET_ID = "14o1wNqQIrJPy9IAuQ7PSCwP6NyA4O5dZrn_FmFoSqLQ"
     
     try:
-        # エラーチェック（if文）を削除して、すぐに開くようにしました
         sheet = client.open_by_key(SPREADSHEET_ID)
         return sheet
     except gspread.exceptions.APIError:
-        st.error("エラー：スプレッドシートが見つかりません。IDが正しいか、共有設定（ロボットの招待）ができているか確認してください。")
+        st.error("エラー：スプレッドシートが見つかりません。")
         st.stop()
+
 # --- データ読み書き関数 ---
 def load_players_from_sheet():
     sheet = connect_to_gsheet()
@@ -46,7 +46,7 @@ def load_players_from_sheet():
         
         db = {}
         for row in data:
-            team = str(row["Team"]) # 数値として扱われないよう文字列化
+            team = str(row["Team"])
             p_key = str(row["PlayerKey"])
             pos = str(row["Position"])
             
@@ -80,7 +80,7 @@ def save_match_data_to_sheet(df):
         worksheet = sheet.add_worksheet(title="history", rows="1000", cols="20")
     
     existing_data = worksheet.get_all_values()
-    # DataFrameの値をすべて文字列に変換してからリスト化（エラー防止）
+    # 全データを文字列化して保存
     data_to_write = df.astype(str).values.tolist()
     
     if not existing_data:
@@ -134,7 +134,7 @@ def add_point(winner):
 #  UI
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v16.1")
+    st.title("🏐 Analyst Pro v17")
     app_mode = st.radio("メニュー", ["📊 試合入力", "👤 チーム管理"])
     st.markdown("---")
     
@@ -148,7 +148,7 @@ with st.sidebar:
 
 # --- モード1：チーム管理 ---
 if app_mode == "👤 チーム管理":
-    st.header("👤 チーム・選手管理 (Google Sheets連動)")
+    st.header("👤 チーム・選手管理")
     
     c1, c2 = st.columns([1, 2])
     with c1:
@@ -241,23 +241,82 @@ elif app_mode == "📊 試合入力":
                 st.session_state.game_state["serve_rights"] = first_srv_key
                 st.rerun()
         else:
+            # --- 試合中の入力エリア ---
             active = list(st.session_state.my_service_order)
             if st.session_state.my_libero!="なし": active.append(st.session_state.my_libero)
             active_sorted = sort_players_by_number(active)
-            c_p, c_r = st.columns([0.8, 1.2])
-            recep = c_p.radio("Pass", ["Aパス","Bパス","Cパス"], horizontal=True)
-            p_key = c_r.selectbox("Player", active_sorted)
-            res = c_r.selectbox("Result", ["得点 (Kill)", "効果", "継続", "失点 (Error)", "被ブロック"])
+            
+            # ゾーンの定義
+            attack_zones = ["レフト(L)", "センター(C)", "ライト(R)", "レフトバック(LB)", "センターバック(CB)", "ライトバック(RB)"]
+            
+            # --- 1段目: レセプション ---
+            st.markdown("##### 1. Reception")
+            # 「失敗」を追加
+            recep = st.radio("Pass", ["Aパス","Bパス","Cパス", "失敗 (エース)"], horizontal=True, label_visibility="collapsed")
+            
+            # --- 2段目: 攻撃情報の詳細 ---
+            st.markdown("##### 2. Attack Detail")
+            
+            # カラム分け
+            c_set, c_zone = st.columns(2)
+            # トスを上げた人（セッター）
+            setter_key = c_set.selectbox("Setter (トス)", active_sorted, key="setter")
+            # 打った場所
+            zone_key = c_zone.selectbox("Zone (場所)", attack_zones, key="zone")
+            
+            # --- 3段目: 選手と結果 ---
+            c_hitter, c_res = st.columns([1, 1])
+            p_key = c_hitter.selectbox("Hitter (打った人)", active_sorted, key="hitter")
+            res = c_res.selectbox("Result", ["得点 (Kill)", "効果", "継続", "失点 (Error)", "被ブロック"], key="res")
+
             st.write("Click Court 👇")
             coords = streamlit_image_coordinates(image, width=500, key="click")
+            
             if coords and coords["x"] != (st.session_state.match_data[-1]["X"] if st.session_state.match_data else -1):
                 pos = st.session_state.players_db[my_team_name].get(p_key, "?")
-                rec = {"Match": f"{datetime.date.today()}_{match_name}", "Set": set_no, "Team": my_team_name, "MyScore": gs['my_score'], "OpScore": gs['op_score'], "Rot": gs['my_rot'], "Player": p_key, "Pos": pos, "Result": res, "Pass": recep, "X": coords["x"], "Y": coords["y"]}
-                st.session_state.match_data.append(rec)
-                if res == "得点 (Kill)": add_point("My Team"); st.toast("Nice!")
-                elif res in ["失点 (Error)", "被ブロック"]: add_point("Opponent"); st.toast("Don't mind")
-                else: st.toast("Saved")
+                
+                # レセプションミスの場合は、攻撃系の項目を記録上どうするか？
+                # ここでは「入力されたまま」保存しますが、得点処理だけ特別にします
+                
+                rec = {
+                    "Match": f"{datetime.date.today()}_{match_name}",
+                    "Set": set_no,
+                    "Team": my_team_name,
+                    "MyScore": gs['my_score'],
+                    "OpScore": gs['op_score'],
+                    "Rot": gs['my_rot'],
+                    "Pass": recep,
+                    "Setter": setter_key,   # 新項目
+                    "Zone": zone_key,       # 新項目
+                    "Player": p_key,
+                    "Pos": pos,
+                    "Result": res,
+                    "X": coords["x"], "Y": coords["y"]
+                }
+                
+                # スコア処理ロジック
+                if recep == "失敗 (エース)":
+                    # レセプション失敗なら即相手得点
+                    add_point("Opponent")
+                    st.toast("Ace! (Opponent Point)")
+                    # レセプション失敗として記録
+                    rec["Result"] = "Rec Error" 
+                    st.session_state.match_data.append(rec)
+                    
+                else:
+                    # 通常の攻撃処理
+                    st.session_state.match_data.append(rec)
+                    if res == "得点 (Kill)": 
+                        add_point("My Team")
+                        st.toast("Nice Kill!")
+                    elif res in ["失点 (Error)", "被ブロック"]: 
+                        add_point("Opponent")
+                        st.toast("Attack Error...")
+                    else: 
+                        st.toast("Saved")
+                
                 st.rerun()
+
             with st.expander("Reset / Sub"):
                 if st.button("Reset Lineup"): st.session_state.my_service_order=[]; st.rerun()
                 c_s1, c_s2 = st.columns(2)
@@ -271,7 +330,12 @@ elif app_mode == "📊 試合入力":
     with col_lg:
         if st.session_state.match_data:
             df = pd.DataFrame(st.session_state.match_data)
-            st.dataframe(df[["MyScore", "Player", "Result"]].iloc[::-1], height=300, hide_index=True)
+            # 表示項目を調整
+            cols_to_show = ["MyScore", "Pass", "Player", "Result"]
+            # データフレームに列が存在するか確認してから表示
+            valid_cols = [c for c in cols_to_show if c in df.columns]
+            
+            st.dataframe(df[valid_cols].iloc[::-1], height=300, hide_index=True)
             if st.button("☁️ Google Sheetsに保存"):
                 save_match_data_to_sheet(df)
                 st.success("クラウド保存完了！")
