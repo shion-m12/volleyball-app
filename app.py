@@ -21,21 +21,16 @@ def connect_to_gsheet():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     
-    # ★ここにスプレッドシートのIDを入力してください！
-    # 例: "1A2b3C..." (URLの d/ と /edit の間の文字列)
+    # ここはあなたのIDのままでOKです！
     SPREADSHEET_ID = "14o1wNqQIrJPy9IAuQ7PSCwP6NyA4O5dZrn_FmFoSqLQ"
     
     try:
-        if SPREADSHEET_ID == "14o1wNqQIrJPy9IAuQ7PSCwP6NyA4O5dZrn_FmFoSqLQ":
-            st.error("エラー：コード内の 'SPREADSHEET_ID' に、本当のIDを貼り付けてください！")
-            st.stop()
-            
+        # エラーチェック（if文）を削除して、すぐに開くようにしました
         sheet = client.open_by_key(SPREADSHEET_ID)
         return sheet
     except gspread.exceptions.APIError:
         st.error("エラー：スプレッドシートが見つかりません。IDが正しいか、共有設定（ロボットの招待）ができているか確認してください。")
         st.stop()
-
 # --- データ読み書き関数 ---
 def load_players_from_sheet():
     sheet = connect_to_gsheet()
@@ -281,5 +276,6 @@ elif app_mode == "📊 試合入力":
                 save_match_data_to_sheet(df)
                 st.success("クラウド保存完了！")
                 st.session_state.match_data = []
+
 
 
