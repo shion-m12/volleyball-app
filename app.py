@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v24")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v25")
 
 # 凡例用の色設定
 ZONE_COLORS = {
@@ -77,7 +77,6 @@ def save_players_to_sheet(players_dict):
     worksheet.clear()
     worksheet.update(rows)
 
-# 追記保存用
 def save_match_data_to_sheet(df):
     sheet = connect_to_gsheet()
     try:
@@ -95,7 +94,6 @@ def save_match_data_to_sheet(df):
     else:
         worksheet.append_rows(data_to_write)
 
-# ★新機能：全データ上書き保存用（編集・削除用）
 def overwrite_history_sheet(df):
     sheet = connect_to_gsheet()
     try:
@@ -105,17 +103,30 @@ def overwrite_history_sheet(df):
     
     worksheet.clear()
     if not df.empty:
-        # ヘッダーとデータを書き込む
         data = [df.columns.tolist()] + df.astype(str).values.tolist()
         worksheet.update(data)
 
+# ★修正：より確実な読み込み方法に変更
 def load_match_history():
     sheet = connect_to_gsheet()
     try:
         worksheet = sheet.worksheet("history")
-        data = worksheet.get_all_records()
-        return pd.DataFrame(data)
-    except:
+        # get_all_records ではなく get_all_values を使用（エラーに強い）
+        data = worksheet.get_all_values()
+        
+        if not data:
+            return pd.DataFrame()
+            
+        # 1行目をヘッダーとして扱う
+        headers = data[0]
+        rows = data[1:]
+        
+        if not rows:
+             return pd.DataFrame(columns=headers)
+             
+        return pd.DataFrame(rows, columns=headers)
+    except Exception as e:
+        # シートがない場合などは空のDFを返す
         return pd.DataFrame()
 
 def sort_players_by_number(player_names):
@@ -168,8 +179,7 @@ def remove_point(winner):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v24")
-    # ★メニューに「履歴編集」を追加
+    st.title("🏐 Analyst Pro v25")
     app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "📝 履歴編集", "👤 チーム管理"])
     st.markdown("---")
     
@@ -246,14 +256,16 @@ elif app_mode == "📈 トス配給分析":
     st.header("📈 セッター配給分析")
     
     df_session = pd.DataFrame(st.session_state.match_data)
+    # 読み込み処理を強化した関数でロード
     df_history = load_match_history()
+    
     df_all = pd.concat([df_history, df_session], ignore_index=True)
     
     if df_all.empty:
-        st.info("データがありません。")
+        st.info("データがありません。試合入力後に「保存」ボタンを押しましたか？")
     else:
         if "X" not in df_all.columns or "Y" not in df_all.columns:
-            st.warning("古いデータ形式が含まれています。")
+            st.warning("座標データが含まれていない、または読み込みに失敗しました。")
         else:
             df_all["X"] = pd.to_numeric(df_all["X"], errors='coerce')
             df_all["Y"] = pd.to_numeric(df_all["Y"], errors='coerce')
@@ -262,11 +274,18 @@ elif app_mode == "📈 トス配給分析":
             with st.expander("🔍 フィルタリング", expanded=True):
                 c_f1, c_f2 = st.columns(2)
                 teams = df_all["Team"].unique()
-                sel_team = c_f1.selectbox("チーム", teams, index=0 if my_team_name in teams else 0)
+                # チーム名フィルタを安全に
+                default_idx = 0
+                if my_team_name in teams:
+                    temp_list = list(teams)
+                    default_idx = temp_list.index(my_team_name)
+                    
+                sel_team = c_f1.selectbox("チーム", teams, index=default_idx)
                 df_filtered = df_all[df_all["Team"] == sel_team]
                 
                 if "Setter" in df_filtered.columns:
-                    setters = ["全員"] + [s for s in list(df_filtered["Setter"].unique()) if s != "なし"]
+                    setters_raw = [s for s in list(df_filtered["Setter"].unique()) if s != "なし"]
+                    setters = ["全員"] + setters_raw
                     sel_setter = c_f2.selectbox("分析対象セッター", setters)
                     if sel_setter != "全員":
                         df_filtered = df_filtered[df_filtered["Setter"] == sel_setter]
@@ -293,28 +312,23 @@ elif app_mode == "📈 トス配給分析":
             except FileNotFoundError:
                 st.error("court.png が見つかりません")
 
-# --- モード3：履歴編集 (新機能) ---
+# --- モード3：履歴編集 ---
 elif app_mode == "📝 履歴編集":
     st.header("📝 履歴データの閲覧・編集")
-    
-    # 全データをロード
     df_all = load_match_history()
     
     if df_all.empty:
         st.info("保存されたデータがまだありません。")
     else:
-        # 試合選択用のリスト作成
         if "Match" in df_all.columns:
             match_list = sorted(df_all["Match"].unique(), reverse=True)
             selected_match = st.selectbox("編集する試合を選択してください", match_list)
             
-            # 選択された試合のデータだけ抽出
             df_match = df_all[df_all["Match"] == selected_match].copy()
             
             st.write(f"▼ {selected_match} のデータ ({len(df_match)}件)")
-            st.caption("※ 表のセルをダブルクリックして書き換えられます。行の削除は左端を選択してDeleteキーです。")
+            st.caption("※ 編集後に「保存」ボタンを押してください。")
             
-            # 編集可能なデータフレームを表示 (num_rows="dynamic"で行の追加削除も許可)
             edited_df = st.data_editor(
                 df_match,
                 num_rows="dynamic",
@@ -324,33 +338,24 @@ elif app_mode == "📝 履歴編集":
             )
             
             col_save, col_del = st.columns([1, 1])
-            
-            # --- 保存処理 ---
             with col_save:
                 if st.button("💾 変更を保存する", type="primary"):
-                    # 元の全データから、この試合の古いデータを削除
                     df_others = df_all[df_all["Match"] != selected_match]
-                    
-                    # 編集後のデータを結合
                     df_new_all = pd.concat([df_others, edited_df], ignore_index=True)
-                    
-                    # スプレッドシートを全上書き
                     overwrite_history_sheet(df_new_all)
                     st.success("保存しました！")
                     st.rerun()
 
-            # --- 削除処理 ---
             with col_del:
                 with st.expander("🗑 この試合を完全に削除"):
-                    st.warning("本当に削除しますか？この操作は取り消せません。")
+                    st.warning("本当に削除しますか？")
                     if st.button("削除実行"):
-                        # この試合以外を残す
                         df_remaining = df_all[df_all["Match"] != selected_match]
                         overwrite_history_sheet(df_remaining)
                         st.success(f"{selected_match} を削除しました。")
                         st.rerun()
         else:
-            st.error("データに 'Match' 列が見つかりません。")
+            st.error("データ列エラー: 'Match' 列が見つかりません。")
 
 # --- モード4：試合入力 ---
 elif app_mode == "📊 試合入力":
@@ -507,6 +512,28 @@ elif app_mode == "📊 試合入力":
                     
                     st.session_state.temp_coords = None
                     st.rerun()
+
+            # ★復活させたメンバーチェンジ・リセットブロック
+            with st.expander("🔄 メンバーチェンジ / リセット"):
+                if st.button("全リセット (スタメン選択に戻る)"):
+                    st.session_state.my_service_order = []
+                    st.rerun()
+                
+                st.caption("交代を行うと、入力候補リストも自動更新されます")
+                c_sub1, c_sub2 = st.columns(2)
+                sub_pos = c_sub1.selectbox("位置", ["P1","P2","P3","P4","P5","P6"])
+                all_p = sort_players_by_number(list(st.session_state.players_db[my_team_name].keys()))
+                bench = [p for p in all_p if p not in st.session_state.my_service_order]
+                
+                sub_in = c_sub2.selectbox("IN", bench) if bench else None
+                
+                if st.button("交代実行"):
+                    if sub_in:
+                        idx = int(sub_pos[1]) - 1 # P1->0
+                        old = st.session_state.my_service_order[idx]
+                        st.session_state.my_service_order[idx] = sub_in
+                        st.success(f"交代: {old} ➔ {sub_in}")
+                        st.rerun()
 
     with col_lg:
         st.header("3. Log")
