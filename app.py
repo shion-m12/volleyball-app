@@ -1,16 +1,17 @@
 import streamlit as st
 import pandas as pd
 from streamlit_image_coordinates import streamlit_image_coordinates
-from PIL import Image
+from PIL import Image, ImageDraw # ImageDrawを追加
 import datetime
 import re
+import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v26")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v26.1")
 
 # 凡例用の色設定
 ZONE_COLORS = {
@@ -23,6 +24,34 @@ ZONE_COLORS = {
     "なし": ("gray", "None")
 }
 
+# --- コート画像を準備する関数 (自動生成付き) ---
+def get_court_image():
+    # ファイルがあって、かつ壊れていないかチェック
+    if os.path.exists("court.png"):
+        try:
+            img = Image.open("court.png")
+            img.verify() # 破損チェック
+            return Image.open("court.png") # 再度開く
+        except Exception:
+            pass # 壊れていたら作り直す
+
+    # 画像がない、または壊れている場合は作成する (500x500の簡易コート)
+    img = Image.new('RGB', (500, 500), color='#FFCC99') # 床の色
+    draw = ImageDraw.Draw(img)
+    w, h = 500, 500
+    
+    # 外枠
+    draw.rectangle([0, 0, w-1, h-1], outline='white', width=5)
+    # センターライン (真ん中)
+    draw.line([0, h/2, w, h/2], fill='white', width=3)
+    # アタックライン (センターから少し離れた上下)
+    draw.line([0, h/2 - 80, w, h/2 - 80], fill='white', width=2) # 上側
+    draw.line([0, h/2 + 80, w, h/2 + 80], fill='white', width=2) # 下側
+    
+    # ファイルとして保存しておく (次回以降使えるように)
+    img.save("court.png")
+    return img
+
 # --- Google Sheets 接続設定 ---
 def connect_to_gsheet():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
@@ -32,7 +61,7 @@ def connect_to_gsheet():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
     except Exception as e:
-        st.error(f"認証エラー: {e}")
+        st.error(f"認証エラー: Secretsの設定を確認してください。 {e}")
         st.stop()
     
     SPREADSHEET_ID = "14o1wNqQIrJPy9IAuQ7PSCwP6NyA4O5dZrn_FmFoSqLQ"
@@ -116,7 +145,6 @@ def load_match_history():
             return pd.DataFrame()
             
         headers = data[0]
-        # 必要な列の簡易チェック
         if "Match" not in headers:
             return pd.DataFrame()
             
@@ -178,7 +206,7 @@ def remove_point(winner):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v26")
+    st.title("🏐 Analyst Pro v26.1")
     app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "📝 履歴編集", "👤 チーム管理"])
     st.markdown("---")
     
@@ -289,10 +317,14 @@ elif app_mode == "📈 トス配給分析":
             
             st.markdown(f"### 🎯 セットアップ位置と配給 ({sel_setter})")
             
+            # 画像描画 (自動生成対応)
             try:
-                img = mpimg.imread('court.png')
+                # PIL画像をMatplotlibで表示できるように変換
+                pil_img = get_court_image()
+                
                 fig, ax = plt.subplots(figsize=(10, 6))
-                ax.imshow(img, extent=[0, 500, 500, 0])
+                # imshowにPILオブジェクトを直接渡せます
+                ax.imshow(pil_img, extent=[0, 500, 500, 0])
                 
                 zones_in_data = df_filtered["Zone"].unique()
                 
@@ -306,8 +338,8 @@ elif app_mode == "📈 トス配給分析":
                 ax.axis('off')
                 st.pyplot(fig)
                 
-            except FileNotFoundError:
-                st.error("court.png が見つかりません")
+            except Exception as e:
+                st.error(f"画像描画エラー: {e}")
 
 # --- モード3：履歴編集 ---
 elif app_mode == "📝 履歴編集":
@@ -356,8 +388,8 @@ elif app_mode == "📝 履歴編集":
 
 # --- モード4：試合入力 ---
 elif app_mode == "📊 試合入力":
-    try: image = Image.open("court.png")
-    except: st.error("画像エラー"); st.stop()
+    # 自動生成した画像を使用
+    image = get_court_image()
         
     col_sc, col_mn, col_lg = st.columns([0.8, 1.2, 0.8])
     with col_sc:
