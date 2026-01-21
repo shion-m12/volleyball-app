@@ -8,13 +8,11 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-import matplotlib.font_manager as fm
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v23")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v24")
 
-# 日本語フォント設定（Matplotlib用: Streamlit Cloudで文字化けしないように英語表記にするか、設定が必要）
-# 今回は凡例を英語表記にして文字化けを回避します
+# 凡例用の色設定
 ZONE_COLORS = {
     "レフト(L)": ("red", "Left"),
     "センター(C)": ("green", "Center"),
@@ -79,6 +77,7 @@ def save_players_to_sheet(players_dict):
     worksheet.clear()
     worksheet.update(rows)
 
+# 追記保存用
 def save_match_data_to_sheet(df):
     sheet = connect_to_gsheet()
     try:
@@ -95,7 +94,21 @@ def save_match_data_to_sheet(df):
         worksheet.append_rows(data_to_write)
     else:
         worksheet.append_rows(data_to_write)
-        
+
+# ★新機能：全データ上書き保存用（編集・削除用）
+def overwrite_history_sheet(df):
+    sheet = connect_to_gsheet()
+    try:
+        worksheet = sheet.worksheet("history")
+    except gspread.exceptions.WorksheetNotFound:
+        worksheet = sheet.add_worksheet(title="history", rows="1000", cols="20")
+    
+    worksheet.clear()
+    if not df.empty:
+        # ヘッダーとデータを書き込む
+        data = [df.columns.tolist()] + df.astype(str).values.tolist()
+        worksheet.update(data)
+
 def load_match_history():
     sheet = connect_to_gsheet()
     try:
@@ -155,8 +168,9 @@ def remove_point(winner):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v23")
-    app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "👤 チーム管理"])
+    st.title("🏐 Analyst Pro v24")
+    # ★メニューに「履歴編集」を追加
+    app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "📝 履歴編集", "👤 チーム管理"])
     st.markdown("---")
     
     team_list = list(st.session_state.players_db.keys())
@@ -227,12 +241,10 @@ if app_mode == "👤 チーム管理":
                         st.warning("削除完了")
                         st.rerun()
 
-# --- モード2：データ分析 (トス配給) ---
+# --- モード2：データ分析 ---
 elif app_mode == "📈 トス配給分析":
-    st.header("📈 セッター配給分析 (Setter Distribution)")
-    st.write("「どこから（点）」→「どこへ（色）」上げたかを可視化します。")
+    st.header("📈 セッター配給分析")
     
-    # データロード
     df_session = pd.DataFrame(st.session_state.match_data)
     df_history = load_match_history()
     df_all = pd.concat([df_history, df_session], ignore_index=True)
@@ -247,62 +259,100 @@ elif app_mode == "📈 トス配給分析":
             df_all["Y"] = pd.to_numeric(df_all["Y"], errors='coerce')
             df_all = df_all.dropna(subset=["X", "Y"])
             
-            # --- フィルタ ---
             with st.expander("🔍 フィルタリング", expanded=True):
                 c_f1, c_f2 = st.columns(2)
                 teams = df_all["Team"].unique()
                 sel_team = c_f1.selectbox("チーム", teams, index=0 if my_team_name in teams else 0)
                 df_filtered = df_all[df_all["Team"] == sel_team]
                 
-                # セッターで絞り込み
                 if "Setter" in df_filtered.columns:
                     setters = ["全員"] + [s for s in list(df_filtered["Setter"].unique()) if s != "なし"]
                     sel_setter = c_f2.selectbox("分析対象セッター", setters)
                     if sel_setter != "全員":
                         df_filtered = df_filtered[df_filtered["Setter"] == sel_setter]
             
-            # --- グラフ描画 ---
             st.markdown(f"### 🎯 セットアップ位置と配給 ({sel_setter})")
-            
             
             try:
                 img = mpimg.imread('court.png')
                 fig, ax = plt.subplots(figsize=(10, 6))
                 ax.imshow(img, extent=[0, 500, 500, 0])
                 
-                # Zoneごとに色分けしてプロット
                 zones_in_data = df_filtered["Zone"].unique()
                 
                 for zone in zones_in_data:
                     if zone == "なし": continue
                     subset = df_filtered[df_filtered["Zone"] == zone]
-                    
-                    # 定義した色を取得
                     color_info = ZONE_COLORS.get(zone, ("gray", zone))
-                    color_code = color_info[0]
-                    label_name = color_info[1] # 凡例は英語で（文字化け防止）
-                    
-                    ax.scatter(
-                        subset["X"], subset["Y"], 
-                        label=label_name, 
-                        color=color_code, 
-                        s=120, alpha=0.8, edgecolors='white'
-                    )
+                    ax.scatter(subset["X"], subset["Y"], label=color_info[1], color=color_info[0], s=120, alpha=0.8, edgecolors='white')
                 
                 ax.legend(loc='upper right', title="Toss Direction")
                 ax.axis('off')
                 st.pyplot(fig)
                 
-                # 割合の表示
-                if not df_filtered.empty:
-                    st.write("📊 **配給割合 (Zone Distribution)**")
-                    dist_counts = df_filtered["Zone"].value_counts()
-                    st.bar_chart(dist_counts)
-                
             except FileNotFoundError:
                 st.error("court.png が見つかりません")
 
-# --- モード3：試合入力 ---
+# --- モード3：履歴編集 (新機能) ---
+elif app_mode == "📝 履歴編集":
+    st.header("📝 履歴データの閲覧・編集")
+    
+    # 全データをロード
+    df_all = load_match_history()
+    
+    if df_all.empty:
+        st.info("保存されたデータがまだありません。")
+    else:
+        # 試合選択用のリスト作成
+        if "Match" in df_all.columns:
+            match_list = sorted(df_all["Match"].unique(), reverse=True)
+            selected_match = st.selectbox("編集する試合を選択してください", match_list)
+            
+            # 選択された試合のデータだけ抽出
+            df_match = df_all[df_all["Match"] == selected_match].copy()
+            
+            st.write(f"▼ {selected_match} のデータ ({len(df_match)}件)")
+            st.caption("※ 表のセルをダブルクリックして書き換えられます。行の削除は左端を選択してDeleteキーです。")
+            
+            # 編集可能なデータフレームを表示 (num_rows="dynamic"で行の追加削除も許可)
+            edited_df = st.data_editor(
+                df_match,
+                num_rows="dynamic",
+                use_container_width=True,
+                height=400,
+                key="editor"
+            )
+            
+            col_save, col_del = st.columns([1, 1])
+            
+            # --- 保存処理 ---
+            with col_save:
+                if st.button("💾 変更を保存する", type="primary"):
+                    # 元の全データから、この試合の古いデータを削除
+                    df_others = df_all[df_all["Match"] != selected_match]
+                    
+                    # 編集後のデータを結合
+                    df_new_all = pd.concat([df_others, edited_df], ignore_index=True)
+                    
+                    # スプレッドシートを全上書き
+                    overwrite_history_sheet(df_new_all)
+                    st.success("保存しました！")
+                    st.rerun()
+
+            # --- 削除処理 ---
+            with col_del:
+                with st.expander("🗑 この試合を完全に削除"):
+                    st.warning("本当に削除しますか？この操作は取り消せません。")
+                    if st.button("削除実行"):
+                        # この試合以外を残す
+                        df_remaining = df_all[df_all["Match"] != selected_match]
+                        overwrite_history_sheet(df_remaining)
+                        st.success(f"{selected_match} を削除しました。")
+                        st.rerun()
+        else:
+            st.error("データに 'Match' 列が見つかりません。")
+
+# --- モード4：試合入力 ---
 elif app_mode == "📊 試合入力":
     try: image = Image.open("court.png")
     except: st.error("画像エラー"); st.stop()
@@ -371,7 +421,6 @@ elif app_mode == "📊 試合入力":
                 st.session_state.game_state["serve_rights"] = first_srv_key
                 st.rerun()
 
-        # --- 試合中 (入力画面) ---
         else:
             with st.expander("🛠 点数・ローテ手動修正", expanded=False):
                 c_m_all, c_o_all = st.columns(2)
@@ -393,7 +442,6 @@ elif app_mode == "📊 試合入力":
             active = list(st.session_state.my_service_order)
             if st.session_state.my_libero!="なし": active.append(st.session_state.my_libero)
             active_sorted = ["なし"] + sort_players_by_number(active)
-            # ★選択肢: なしを先頭に
             attack_zones = ["なし", "レフト(L)", "センター(C)", "ライト(R)", "レフトバック(LB)", "センターバック(CB)", "ライトバック(RB)"]
             
             st.markdown("##### 1. Reception")
@@ -413,15 +461,10 @@ elif app_mode == "📊 試合入力":
                 p_key = c_hitter.selectbox("Hitter (打った人)", active_sorted, key="hitter")
                 res = c_res.selectbox("Result", ["なし", "得点 (Kill)", "効果", "継続", "失点 (Error)", "被ブロック"], key="res")
 
-                # ★ここを変更：セットアップ位置の入力
                 st.write("👇 **トスを上げた位置（セットアップ位置）** をタップしてください")
                 coords = streamlit_image_coordinates(image, width=500, key="click")
-                
-                if coords:
-                    st.session_state.temp_coords = coords
-
-                if st.session_state.temp_coords:
-                    st.write(f"📍 座標選択済み: {st.session_state.temp_coords}")
+                if coords: st.session_state.temp_coords = coords
+                if st.session_state.temp_coords: st.write(f"📍 座標選択済み: {st.session_state.temp_coords}")
 
             st.markdown("---")
             if st.button("📝 この内容で記録する", type="primary", use_container_width=True):
