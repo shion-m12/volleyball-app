@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from streamlit_image_coordinates import streamlit_image_coordinates
-from PIL import Image, ImageDraw # ImageDrawを追加
+from PIL import Image, ImageDraw
 import datetime
 import re
 import os
@@ -11,9 +11,9 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v26.1")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v28")
 
-# 凡例用の色設定
+# ゾーンと色の定義
 ZONE_COLORS = {
     "レフト(L)": ("red", "Left"),
     "センター(C)": ("green", "Center"),
@@ -24,31 +24,26 @@ ZONE_COLORS = {
     "なし": ("gray", "None")
 }
 
-# --- コート画像を準備する関数 (自動生成付き) ---
+# 表示順序
+PASS_ORDER = ["Aパス", "Bパス", "Cパス", "その他", "相手サーブミス", "失敗 (エース)"]
+ZONE_ORDER = ["レフト(L)", "センター(C)", "ライト(R)", "レフトバック(LB)", "センターバック(CB)", "ライトバック(RB)", "なし"]
+
+# --- コート画像を準備する関数 ---
 def get_court_image():
-    # ファイルがあって、かつ壊れていないかチェック
     if os.path.exists("court.png"):
         try:
             img = Image.open("court.png")
-            img.verify() # 破損チェック
-            return Image.open("court.png") # 再度開く
+            img.verify()
+            return Image.open("court.png")
         except Exception:
-            pass # 壊れていたら作り直す
-
-    # 画像がない、または壊れている場合は作成する (500x500の簡易コート)
-    img = Image.new('RGB', (500, 500), color='#FFCC99') # 床の色
+            pass
+    img = Image.new('RGB', (500, 500), color='#FFCC99')
     draw = ImageDraw.Draw(img)
     w, h = 500, 500
-    
-    # 外枠
     draw.rectangle([0, 0, w-1, h-1], outline='white', width=5)
-    # センターライン (真ん中)
     draw.line([0, h/2, w, h/2], fill='white', width=3)
-    # アタックライン (センターから少し離れた上下)
-    draw.line([0, h/2 - 80, w, h/2 - 80], fill='white', width=2) # 上側
-    draw.line([0, h/2 + 80, w, h/2 + 80], fill='white', width=2) # 下側
-    
-    # ファイルとして保存しておく (次回以降使えるように)
+    draw.line([0, h/2 - 80, w, h/2 - 80], fill='white', width=2)
+    draw.line([0, h/2 + 80, w, h/2 + 80], fill='white', width=2)
     img.save("court.png")
     return img
 
@@ -61,7 +56,7 @@ def connect_to_gsheet():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
     except Exception as e:
-        st.error(f"認証エラー: Secretsの設定を確認してください。 {e}")
+        st.error(f"認証エラー: {e}")
         st.stop()
     
     SPREADSHEET_ID = "14o1wNqQIrJPy9IAuQ7PSCwP6NyA4O5dZrn_FmFoSqLQ"
@@ -112,10 +107,8 @@ def save_match_data_to_sheet(df):
         worksheet = sheet.worksheet("history")
     except gspread.exceptions.WorksheetNotFound:
         worksheet = sheet.add_worksheet(title="history", rows="1000", cols="20")
-    
     existing_data = worksheet.get_all_values()
     data_to_write = df.astype(str).values.tolist()
-    
     if not existing_data:
         header = df.columns.tolist()
         worksheet.append_row(header)
@@ -129,7 +122,6 @@ def overwrite_history_sheet(df):
         worksheet = sheet.worksheet("history")
     except gspread.exceptions.WorksheetNotFound:
         worksheet = sheet.add_worksheet(title="history", rows="1000", cols="20")
-    
     worksheet.clear()
     if not df.empty:
         data = [df.columns.tolist()] + df.astype(str).values.tolist()
@@ -140,18 +132,11 @@ def load_match_history():
     try:
         worksheet = sheet.worksheet("history")
         data = worksheet.get_all_values()
-        
-        if not data:
-            return pd.DataFrame()
-            
+        if not data: return pd.DataFrame()
         headers = data[0]
-        if "Match" not in headers:
-            return pd.DataFrame()
-            
+        if "Match" not in headers: return pd.DataFrame()
         rows = data[1:]
-        if not rows:
-             return pd.DataFrame(columns=headers)
-             
+        if not rows: return pd.DataFrame(columns=headers)
         return pd.DataFrame(rows, columns=headers)
     except Exception as e:
         return pd.DataFrame()
@@ -206,7 +191,7 @@ def remove_point(winner):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v26.1")
+    st.title("🏐 Analyst Pro v28")
     app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "📝 履歴編集", "👤 チーム管理"])
     st.markdown("---")
     
@@ -278,26 +263,26 @@ if app_mode == "👤 チーム管理":
                         st.warning("削除完了")
                         st.rerun()
 
-# --- モード2：データ分析 ---
+# --- モード2：データ分析 (詳細テーブル追加) ---
 elif app_mode == "📈 トス配給分析":
-    st.header("📈 セッター配給分析")
+    st.header("📈 セッター配給分析 (Setter Distribution)")
     
     df_session = pd.DataFrame(st.session_state.match_data)
     df_history = load_match_history()
-    
     df_all = pd.concat([df_history, df_session], ignore_index=True)
     
     if df_all.empty:
-        st.info("データがありません。試合入力後に「保存」ボタンを押してください。")
+        st.info("データがありません。")
     else:
         if "X" not in df_all.columns or "Y" not in df_all.columns:
-            st.warning("座標データの読み込みに失敗しました。履歴編集画面でデータを確認してください。")
+            st.warning("データの列構造が古い可能性があります。")
         else:
             df_all["X"] = pd.to_numeric(df_all["X"], errors='coerce')
             df_all["Y"] = pd.to_numeric(df_all["Y"], errors='coerce')
             df_all = df_all.dropna(subset=["X", "Y"])
             
-            with st.expander("🔍 フィルタリング", expanded=True):
+            # フィルタリング
+            with st.expander("🔍 フィルタリング設定", expanded=True):
                 c_f1, c_f2 = st.columns(2)
                 teams = df_all["Team"].unique()
                 default_idx = 0
@@ -315,29 +300,85 @@ elif app_mode == "📈 トス配給分析":
                     if sel_setter != "全員":
                         df_filtered = df_filtered[df_filtered["Setter"] == sel_setter]
             
-            st.markdown(f"### 🎯 セットアップ位置と配給 ({sel_setter})")
-            
-            # 画像描画 (自動生成対応)
+            # --- マトリクス表の作成 (配給率 ＆ 決定率) ---
+            if not df_filtered.empty and "Pass" in df_filtered.columns and "Zone" in df_filtered.columns:
+                st.markdown(f"### 📊 レセプション別 配給・決定率一覧 - {sel_setter}")
+                st.caption("配: 配給率 (本数シェア%) / 決: 決定率 (得点確率%)")
+                
+                # ゾーンごとの集計
+                # 1. 各ゾーンの「総本数 (Distribution用)」
+                pass_counts = df_filtered["Pass"].value_counts() # 各Passの総数(分母)
+                
+                # 2. 各Pass x Zoneごとの「打数」と「得点数」
+                stats = df_filtered.groupby(['Pass', 'Zone']).agg(
+                    attempts=('Result', 'count'),
+                    kills=('Result', lambda x: (x == '得点 (Kill)').sum())
+                ).reset_index()
+                
+                # 表データ作成
+                # インデックス: Pass順序、カラム: Zone * 2 (配, 決)
+                table_data = []
+                
+                # データがあるPassのみ抽出
+                valid_passes = [p for p in PASS_ORDER if p in df_filtered["Pass"].unique()]
+                
+                for p_label in valid_passes:
+                    row = {"Pass": p_label}
+                    total_sets_in_pass = pass_counts.get(p_label, 0)
+                    
+                    for z_label in ZONE_ORDER:
+                        # 該当するデータを探す
+                        target = stats[(stats['Pass'] == p_label) & (stats['Zone'] == z_label)]
+                        
+                        if not target.empty:
+                            att = target.iloc[0]['attempts']
+                            kill = target.iloc[0]['kills']
+                            
+                            # 配給率 = そのゾーンへの本数 / そのPassの総本数
+                            dist_rate = (att / total_sets_in_pass * 100) if total_sets_in_pass > 0 else 0
+                            # 決定率 = そのゾーンでの得点 / そのゾーンへの本数
+                            kill_rate = (kill / att * 100) if att > 0 else 0
+                            
+                            row[f"{z_label} (配)"] = dist_rate
+                            row[f"{z_label} (決)"] = kill_rate
+                        else:
+                            row[f"{z_label} (配)"] = 0.0
+                            row[f"{z_label} (決)"] = 0.0
+                    
+                    table_data.append(row)
+                
+                if table_data:
+                    df_matrix = pd.DataFrame(table_data).set_index("Pass")
+                    
+                    # スタイリング (配=赤系, 決=青系)
+                    # カラムリスト作成
+                    dist_cols = [c for c in df_matrix.columns if "(配)" in c]
+                    kill_cols = [c for c in df_matrix.columns if "(決)" in c]
+                    
+                    st.dataframe(
+                        df_matrix.style
+                        .format("{:.1f}%")
+                        .background_gradient(cmap="Oranges", subset=dist_cols, vmin=0, vmax=100)
+                        .background_gradient(cmap="Blues", subset=kill_cols, vmin=0, vmax=100),
+                        use_container_width=True
+                    )
+
+            # --- 散布図 ---
+            st.markdown("---")
+            st.markdown(f"### 🎯 セットアップ位置の散布図")
             try:
-                # PIL画像をMatplotlibで表示できるように変換
                 pil_img = get_court_image()
-                
                 fig, ax = plt.subplots(figsize=(10, 6))
-                # imshowにPILオブジェクトを直接渡せます
                 ax.imshow(pil_img, extent=[0, 500, 500, 0])
-                
                 zones_in_data = df_filtered["Zone"].unique()
-                
                 for zone in zones_in_data:
                     if zone == "なし": continue
                     subset = df_filtered[df_filtered["Zone"] == zone]
                     color_info = ZONE_COLORS.get(zone, ("gray", zone))
                     ax.scatter(subset["X"], subset["Y"], label=color_info[1], color=color_info[0], s=120, alpha=0.8, edgecolors='white')
-                
                 ax.legend(loc='upper right', title="Toss Direction")
                 ax.axis('off')
                 st.pyplot(fig)
-                
             except Exception as e:
                 st.error(f"画像描画エラー: {e}")
 
@@ -345,52 +386,35 @@ elif app_mode == "📈 トス配給分析":
 elif app_mode == "📝 履歴編集":
     st.header("📝 履歴データの閲覧・編集")
     df_all = load_match_history()
-    
     if df_all.empty:
         st.info("保存されたデータがまだありません。")
     else:
         if "Match" in df_all.columns:
             match_list = sorted(df_all["Match"].unique(), reverse=True)
             selected_match = st.selectbox("編集する試合を選択してください", match_list)
-            
             df_match = df_all[df_all["Match"] == selected_match].copy()
-            
             st.write(f"▼ {selected_match} のデータ ({len(df_match)}件)")
-            st.caption("※ 編集後に「保存」ボタンを押してください。")
-            
-            edited_df = st.data_editor(
-                df_match,
-                num_rows="dynamic",
-                use_container_width=True,
-                height=400,
-                key="editor"
-            )
-            
-            col_save, col_del = st.columns([1, 1])
-            with col_save:
+            edited_df = st.data_editor(df_match, num_rows="dynamic", use_container_width=True, height=400, key="editor")
+            c_s, c_d = st.columns([1, 1])
+            with c_s:
                 if st.button("💾 変更を保存する", type="primary"):
                     df_others = df_all[df_all["Match"] != selected_match]
                     df_new_all = pd.concat([df_others, edited_df], ignore_index=True)
                     overwrite_history_sheet(df_new_all)
                     st.success("保存しました！")
                     st.rerun()
-
-            with col_del:
-                with st.expander("🗑 この試合を完全に削除"):
-                    st.warning("本当に削除しますか？")
+            with c_d:
+                with st.expander("🗑 削除"):
                     if st.button("削除実行"):
-                        df_remaining = df_all[df_all["Match"] != selected_match]
-                        overwrite_history_sheet(df_remaining)
-                        st.success(f"{selected_match} を削除しました。")
+                        df_rem = df_all[df_all["Match"] != selected_match]
+                        overwrite_history_sheet(df_rem)
+                        st.success("削除しました")
                         st.rerun()
-        else:
-            st.error("データ列エラー: 'Match' 列が見つかりません。")
+        else: st.error("Match列なし")
 
 # --- モード4：試合入力 ---
 elif app_mode == "📊 試合入力":
-    # 自動生成した画像を使用
     image = get_court_image()
-        
     col_sc, col_mn, col_lg = st.columns([0.8, 1.2, 0.8])
     with col_sc:
         gs = st.session_state.game_state
@@ -403,7 +427,6 @@ elif app_mode == "📊 試合入力":
             </div>
         </div>
         """, unsafe_allow_html=True)
-        
         with st.expander("試合設定", expanded=True):
             match_name = st.text_input("試合名", "練習試合")
             set_no = st.number_input("Set", 1, 5, 1)
@@ -413,7 +436,6 @@ elif app_mode == "📊 試合入力":
             st.info("🏁 スターティングメンバー (Lineup) 設定")
             mp = sort_players_by_number(list(st.session_state.players_db[my_team_name].keys())) if my_team_name!="未設定" else []
             op = sort_players_by_number(list(st.session_state.players_db[op_team_name].keys())) if op_team_name!="未設定" else []
-            
             c_m_bk, c_m_fr, c_net, c_o_fr, c_o_bk = st.columns([1.5, 1.5, 0.2, 1.5, 1.5])
             with c_net: st.markdown("<div style='height:300px; border-left: 3px dashed #888; margin-left: 50%;'></div>", unsafe_allow_html=True)
             with c_m_bk:
@@ -454,7 +476,6 @@ elif app_mode == "📊 試合入力":
                 st.session_state.my_libero = ml; st.session_state.op_libero = ol
                 st.session_state.game_state["serve_rights"] = first_srv_key
                 st.rerun()
-
         else:
             with st.expander("🛠 点数・ローテ手動修正", expanded=False):
                 c_m_all, c_o_all = st.columns(2)
@@ -532,13 +553,11 @@ elif app_mode == "📊 試合入力":
                         "X": final_coords["x"], "Y": final_coords["y"]
                     }
                     st.session_state.match_data.append(rec)
-                    
                     if recep == "失敗 (エース)": add_point("Opponent"); st.toast("Ace!")
                     elif recep == "相手サーブミス": add_point("My Team"); st.toast("Lucky!")
                     elif final_res == "得点 (Kill)": add_point("My Team"); st.toast("Nice Kill!")
                     elif final_res in ["失点 (Error)", "被ブロック"]: add_point("Opponent"); st.toast("Error...")
                     else: st.toast("記録しました")
-                    
                     st.session_state.temp_coords = None
                     st.rerun()
 
@@ -546,15 +565,11 @@ elif app_mode == "📊 試合入力":
                 if st.button("全リセット (スタメン選択に戻る)"):
                     st.session_state.my_service_order = []
                     st.rerun()
-                
-                st.caption("交代を行うと、入力候補リストも自動更新されます")
                 c_sub1, c_sub2 = st.columns(2)
                 sub_pos = c_sub1.selectbox("位置", ["P1","P2","P3","P4","P5","P6"])
                 all_p = sort_players_by_number(list(st.session_state.players_db[my_team_name].keys()))
                 bench = [p for p in all_p if p not in st.session_state.my_service_order]
-                
                 sub_in = c_sub2.selectbox("IN", bench) if bench else None
-                
                 if st.button("交代実行"):
                     if sub_in:
                         idx = int(sub_pos[1]) - 1
@@ -570,13 +585,11 @@ elif app_mode == "📊 試合入力":
                 st.session_state.match_data.pop()
                 st.warning("直前の記録を削除")
                 st.rerun()
-
         if st.session_state.match_data:
             df = pd.DataFrame(st.session_state.match_data)
             cols_to_show = ["MyScore", "Pass", "Setter", "Zone", "Result"]
             valid_cols = [c for c in cols_to_show if c in df.columns]
             st.dataframe(df[valid_cols].iloc[::-1], height=300, hide_index=True)
-            
             if st.button("💾 データ送信 (保存してリストをクリア)"):
                 save_match_data_to_sheet(df)
                 st.success("クラウド保存完了")
