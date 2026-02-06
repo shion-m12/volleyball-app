@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v29")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v29.1")
 
 # ゾーンと色の定義
 ZONE_COLORS = {
@@ -187,37 +187,28 @@ def remove_point(winner):
     else:
         if gs["op_score"] > 0: gs["op_score"] -= 1
 
-# ★現在のローテーション位置を取得する関数
+# ★現在のローテーション位置を取得する関数（修正版）
 def get_current_positions(service_order, rotation):
-    # order: [p1, p2, p3, p4, p5, p6] のリスト
-    # rotation: 1～6
-    # コート上の位置 (FrontLeft, FrontCenter...) に誰がいるかを返す
-    
     if not service_order or len(service_order) < 6:
         return {}
     
-    # Pythonのリストは0始まり。Rot1の時、Pos1(サーブ)にいるのは order[0]
-    # Rotが進むにつれて反時計回りにズレていく（インデックスはマイナスになる）
+    # service_order = [P1_start, P2_start, ... P6_start]
+    # Rot 1: P1に order[0] がいる
+    # Rot 2: P1に order[1] がいる (P2だった人がサーバーになる)
+    # つまり、現在のコート位置 N にいるのは、order[(N-1 + (Rot-1)) % 6] の選手
     
-    # 各ポジションのインデックス計算: (定位置 - Rot) % 6
-    # Pos1(BR): 0, Pos2(FR): 1, Pos3(FC): 2, Pos4(FL): 3, Pos5(BL): 4, Pos6(BC): 5
+    # 各ポジションに対応する開始時インデックスを計算
+    # P1(BR)はリストのindex 0に対応、P2は1...
     
-    # 修正ロジック:
-    # Rot1: [0]がPos1
-    # Rot2: [5]がPos1 ([0]はPos6に移動)
-    # つまり Pos_i の選手 = order[(i - 1 - (rotation - 1)) % 6] ???
-    # いや、もっと単純に。
-    # Pos 1 (Srv) index = (1 - rot) % 6
-    # Pos 2 (FR)  index = (2 - rot) % 6
-    # ...
+    r_idx = rotation - 1
     
     indices = {
-        "P4(FL)": (3 - (rotation - 1)) % 6,
-        "P3(FC)": (2 - (rotation - 1)) % 6,
-        "P2(FR)": (1 - (rotation - 1)) % 6,
-        "P5(BL)": (4 - (rotation - 1)) % 6,
-        "P6(BC)": (5 - (rotation - 1)) % 6,
-        "P1(BR)": (0 - (rotation - 1)) % 6,
+        "P4(FL)": (3 + r_idx) % 6,
+        "P3(FC)": (2 + r_idx) % 6,
+        "P2(FR)": (1 + r_idx) % 6,
+        "P5(BL)": (4 + r_idx) % 6,
+        "P6(BC)": (5 + r_idx) % 6,
+        "P1(BR)": (0 + r_idx) % 6,
     }
     
     positions = {k: service_order[v] for k, v in indices.items()}
@@ -227,7 +218,7 @@ def get_current_positions(service_order, rotation):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v29")
+    st.title("🏐 Analyst Pro v29.1")
     app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "📝 履歴編集", "👤 チーム管理"])
     st.markdown("---")
     
@@ -444,11 +435,11 @@ elif app_mode == "📊 試合入力":
         </div>
         """, unsafe_allow_html=True)
         
-        # ★現在のローテーション表示 (Visual)
+        # ★現在のローテーション表示 (修正版: CSSのエラー回避のため f-stringを使わず単純なstyle属性を使用)
         if st.session_state.my_service_order:
             pos_map = get_current_positions(st.session_state.my_service_order, gs['my_rot'])
             
-            # HTMLで簡易的なコート表示を作る
+            # CSSを分離して、Pythonの.formatを使わずにHTMLを構築
             st.markdown("""
             <style>
                 .court-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; border: 1px solid #ccc; padding: 5px; background: #f9f9f9; text-align: center; font-size: 0.8em; }
@@ -457,20 +448,22 @@ elif app_mode == "📊 試合入力":
                 .pos-label { font-size: 0.7em; color: #888; display: block; }
                 .player-name { font-weight: bold; color: #000; }
             </style>
+            """, unsafe_allow_html=True)
+            
+            # 埋め込み部分はf-stringで作成
+            grid_html = f"""
             <div class="court-grid">
                 <div class="court-net">NET (Front)</div>
-                <div class="court-cell"><span class="pos-label">P4 (FL)</span><span class="player-name">{}</span></div>
-                <div class="court-cell"><span class="pos-label">P3 (FC)</span><span class="player-name">{}</span></div>
-                <div class="court-cell"><span class="pos-label">P2 (FR)</span><span class="player-name">{}</span></div>
+                <div class="court-cell"><span class="pos-label">P4 (FL)</span><span class="player-name">{pos_map.get("P4(FL)", "?")}</span></div>
+                <div class="court-cell"><span class="pos-label">P3 (FC)</span><span class="player-name">{pos_map.get("P3(FC)", "?")}</span></div>
+                <div class="court-cell"><span class="pos-label">P2 (FR)</span><span class="player-name">{pos_map.get("P2(FR)", "?")}</span></div>
                 
-                <div class="court-cell"><span class="pos-label">P5 (BL)</span><span class="player-name">{}</span></div>
-                <div class="court-cell"><span class="pos-label">P6 (BC)</span><span class="player-name">{}</span></div>
-                <div class="court-cell" style="background:#e6f3ff;"><span class="pos-label">P1 (Srv)</span><span class="player-name">{}</span></div>
+                <div class="court-cell"><span class="pos-label">P5 (BL)</span><span class="player-name">{pos_map.get("P5(BL)", "?")}</span></div>
+                <div class="court-cell"><span class="pos-label">P6 (BC)</span><span class="player-name">{pos_map.get("P6(BC)", "?")}</span></div>
+                <div class="court-cell" style="background:#e6f3ff;"><span class="pos-label">P1 (Srv)</span><span class="player-name">{pos_map.get("P1(BR)", "?")}</span></div>
             </div>
-            """.format(
-                pos_map.get("P4(FL)", "?"), pos_map.get("P3(FC)", "?"), pos_map.get("P2(FR)", "?"),
-                pos_map.get("P5(BL)", "?"), pos_map.get("P6(BC)", "?"), pos_map.get("P1(BR)", "?")
-            ), unsafe_allow_html=True)
+            """
+            st.markdown(grid_html, unsafe_allow_html=True)
         
         with st.expander("試合設定", expanded=False):
             match_name = st.text_input("試合名", "練習試合")
@@ -625,15 +618,11 @@ elif app_mode == "📊 試合入力":
 
     with col_lg:
         st.header("3. Log")
-        
-        # ★Undoボタン
         if st.session_state.match_data:
             if st.button("↩️ 1つ戻る (Undo)"):
                 st.session_state.match_data.pop()
                 st.warning("直前の記録を削除")
                 st.rerun()
-        
-        # ★リストと送信ボタン (常に表示し、データがないときはdisabledにする)
         if st.session_state.match_data:
             df = pd.DataFrame(st.session_state.match_data)
             cols_to_show = ["MyScore", "Pass", "Setter", "Zone", "Result"]
@@ -648,5 +637,5 @@ elif app_mode == "📊 試合入力":
                 st.rerun()
         else:
             st.info("記録待ち...")
-            # データがない時は押せないボタンを表示しておく
+            # データがない時は押せないボタン
             st.button("💾 データ送信 (保存してリストをクリア)", disabled=True)
