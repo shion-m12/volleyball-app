@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v29.1")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v29.2")
 
 # ゾーンと色の定義
 ZONE_COLORS = {
@@ -187,21 +187,11 @@ def remove_point(winner):
     else:
         if gs["op_score"] > 0: gs["op_score"] -= 1
 
-# ★現在のローテーション位置を取得する関数（修正版）
+# ★現在のローテーション位置を取得する関数
 def get_current_positions(service_order, rotation):
     if not service_order or len(service_order) < 6:
         return {}
-    
-    # service_order = [P1_start, P2_start, ... P6_start]
-    # Rot 1: P1に order[0] がいる
-    # Rot 2: P1に order[1] がいる (P2だった人がサーバーになる)
-    # つまり、現在のコート位置 N にいるのは、order[(N-1 + (Rot-1)) % 6] の選手
-    
-    # 各ポジションに対応する開始時インデックスを計算
-    # P1(BR)はリストのindex 0に対応、P2は1...
-    
     r_idx = rotation - 1
-    
     indices = {
         "P4(FL)": (3 + r_idx) % 6,
         "P3(FC)": (2 + r_idx) % 6,
@@ -210,7 +200,6 @@ def get_current_positions(service_order, rotation):
         "P6(BC)": (5 + r_idx) % 6,
         "P1(BR)": (0 + r_idx) % 6,
     }
-    
     positions = {k: service_order[v] for k, v in indices.items()}
     return positions
 
@@ -218,7 +207,7 @@ def get_current_positions(service_order, rotation):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v29.1")
+    st.title("🏐 Analyst Pro v29.2")
     app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "📝 履歴編集", "👤 チーム管理"])
     st.markdown("---")
     
@@ -435,35 +424,23 @@ elif app_mode == "📊 試合入力":
         </div>
         """, unsafe_allow_html=True)
         
-        # ★現在のローテーション表示 (修正版: CSSのエラー回避のため f-stringを使わず単純なstyle属性を使用)
+        # ★現在のローテーション表示 (修正: Streamlit標準機能で描画)
         if st.session_state.my_service_order:
             pos_map = get_current_positions(st.session_state.my_service_order, gs['my_rot'])
             
-            # CSSを分離して、Pythonの.formatを使わずにHTMLを構築
-            st.markdown("""
-            <style>
-                .court-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; border: 1px solid #ccc; padding: 5px; background: #f9f9f9; text-align: center; font-size: 0.8em; }
-                .court-cell { padding: 5px; border-radius: 5px; background: white; border: 1px solid #ddd; }
-                .court-net { grid-column: 1 / 4; border-bottom: 3px double #333; margin-bottom: 5px; font-weight: bold; }
-                .pos-label { font-size: 0.7em; color: #888; display: block; }
-                .player-name { font-weight: bold; color: #000; }
-            </style>
-            """, unsafe_allow_html=True)
-            
-            # 埋め込み部分はf-stringで作成
-            grid_html = f"""
-            <div class="court-grid">
-                <div class="court-net">NET (Front)</div>
-                <div class="court-cell"><span class="pos-label">P4 (FL)</span><span class="player-name">{pos_map.get("P4(FL)", "?")}</span></div>
-                <div class="court-cell"><span class="pos-label">P3 (FC)</span><span class="player-name">{pos_map.get("P3(FC)", "?")}</span></div>
-                <div class="court-cell"><span class="pos-label">P2 (FR)</span><span class="player-name">{pos_map.get("P2(FR)", "?")}</span></div>
+            st.markdown("###### 🏐 現在のコート配置")
+            with st.container(border=True):
+                st.caption("ネット (NET)")
+                c_f4, c_f3, c_f2 = st.columns(3)
+                with c_f4: st.info(f"**P4 (FL)**\n\n{pos_map.get('P4(FL)', '?')}")
+                with c_f3: st.info(f"**P3 (FC)**\n\n{pos_map.get('P3(FC)', '?')}")
+                with c_f2: st.info(f"**P2 (FR)**\n\n{pos_map.get('P2(FR)', '?')}")
                 
-                <div class="court-cell"><span class="pos-label">P5 (BL)</span><span class="player-name">{pos_map.get("P5(BL)", "?")}</span></div>
-                <div class="court-cell"><span class="pos-label">P6 (BC)</span><span class="player-name">{pos_map.get("P6(BC)", "?")}</span></div>
-                <div class="court-cell" style="background:#e6f3ff;"><span class="pos-label">P1 (Srv)</span><span class="player-name">{pos_map.get("P1(BR)", "?")}</span></div>
-            </div>
-            """
-            st.markdown(grid_html, unsafe_allow_html=True)
+                st.markdown("---")
+                c_b5, c_b6, c_b1 = st.columns(3)
+                with c_b5: st.success(f"**P5 (BL)**\n\n{pos_map.get('P5(BL)', '?')}")
+                with c_b6: st.success(f"**P6 (BC)**\n\n{pos_map.get('P6(BC)', '?')}")
+                with c_b1: st.warning(f"**P1 (Srv)**\n\n{pos_map.get('P1(BR)', '?')}")
         
         with st.expander("試合設定", expanded=False):
             match_name = st.text_input("試合名", "練習試合")
@@ -628,8 +605,6 @@ elif app_mode == "📊 試合入力":
             cols_to_show = ["MyScore", "Pass", "Setter", "Zone", "Result"]
             valid_cols = [c for c in cols_to_show if c in df.columns]
             st.dataframe(df[valid_cols].iloc[::-1], height=300, hide_index=True)
-            
-            # データがある時
             if st.button("💾 データ送信 (保存してリストをクリア)", type="primary"):
                 save_match_data_to_sheet(df)
                 st.success("クラウド保存完了")
@@ -637,5 +612,4 @@ elif app_mode == "📊 試合入力":
                 st.rerun()
         else:
             st.info("記録待ち...")
-            # データがない時は押せないボタン
             st.button("💾 データ送信 (保存してリストをクリア)", disabled=True)
