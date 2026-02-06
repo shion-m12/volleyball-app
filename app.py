@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v28")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v29")
 
 # ゾーンと色の定義
 ZONE_COLORS = {
@@ -187,11 +187,47 @@ def remove_point(winner):
     else:
         if gs["op_score"] > 0: gs["op_score"] -= 1
 
+# ★現在のローテーション位置を取得する関数
+def get_current_positions(service_order, rotation):
+    # order: [p1, p2, p3, p4, p5, p6] のリスト
+    # rotation: 1～6
+    # コート上の位置 (FrontLeft, FrontCenter...) に誰がいるかを返す
+    
+    if not service_order or len(service_order) < 6:
+        return {}
+    
+    # Pythonのリストは0始まり。Rot1の時、Pos1(サーブ)にいるのは order[0]
+    # Rotが進むにつれて反時計回りにズレていく（インデックスはマイナスになる）
+    
+    # 各ポジションのインデックス計算: (定位置 - Rot) % 6
+    # Pos1(BR): 0, Pos2(FR): 1, Pos3(FC): 2, Pos4(FL): 3, Pos5(BL): 4, Pos6(BC): 5
+    
+    # 修正ロジック:
+    # Rot1: [0]がPos1
+    # Rot2: [5]がPos1 ([0]はPos6に移動)
+    # つまり Pos_i の選手 = order[(i - 1 - (rotation - 1)) % 6] ???
+    # いや、もっと単純に。
+    # Pos 1 (Srv) index = (1 - rot) % 6
+    # Pos 2 (FR)  index = (2 - rot) % 6
+    # ...
+    
+    indices = {
+        "P4(FL)": (3 - (rotation - 1)) % 6,
+        "P3(FC)": (2 - (rotation - 1)) % 6,
+        "P2(FR)": (1 - (rotation - 1)) % 6,
+        "P5(BL)": (4 - (rotation - 1)) % 6,
+        "P6(BC)": (5 - (rotation - 1)) % 6,
+        "P1(BR)": (0 - (rotation - 1)) % 6,
+    }
+    
+    positions = {k: service_order[v] for k, v in indices.items()}
+    return positions
+
 # ==========================================
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v28")
+    st.title("🏐 Analyst Pro v29")
     app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "📝 履歴編集", "👤 チーム管理"])
     st.markdown("---")
     
@@ -263,7 +299,7 @@ if app_mode == "👤 チーム管理":
                         st.warning("削除完了")
                         st.rerun()
 
-# --- モード2：データ分析 (詳細テーブル追加) ---
+# --- モード2：データ分析 ---
 elif app_mode == "📈 トス配給分析":
     st.header("📈 セッター配給分析 (Setter Distribution)")
     
@@ -281,7 +317,6 @@ elif app_mode == "📈 トス配給分析":
             df_all["Y"] = pd.to_numeric(df_all["Y"], errors='coerce')
             df_all = df_all.dropna(subset=["X", "Y"])
             
-            # フィルタリング
             with st.expander("🔍 フィルタリング設定", expanded=True):
                 c_f1, c_f2 = st.columns(2)
                 teams = df_all["Team"].unique()
@@ -300,61 +335,41 @@ elif app_mode == "📈 トス配給分析":
                     if sel_setter != "全員":
                         df_filtered = df_filtered[df_filtered["Setter"] == sel_setter]
             
-            # --- マトリクス表の作成 (配給率 ＆ 決定率) ---
+            # マトリクス表
             if not df_filtered.empty and "Pass" in df_filtered.columns and "Zone" in df_filtered.columns:
                 st.markdown(f"### 📊 レセプション別 配給・決定率一覧 - {sel_setter}")
                 st.caption("配: 配給率 (本数シェア%) / 決: 決定率 (得点確率%)")
                 
-                # ゾーンごとの集計
-                # 1. 各ゾーンの「総本数 (Distribution用)」
-                pass_counts = df_filtered["Pass"].value_counts() # 各Passの総数(分母)
-                
-                # 2. 各Pass x Zoneごとの「打数」と「得点数」
+                pass_counts = df_filtered["Pass"].value_counts()
                 stats = df_filtered.groupby(['Pass', 'Zone']).agg(
                     attempts=('Result', 'count'),
                     kills=('Result', lambda x: (x == '得点 (Kill)').sum())
                 ).reset_index()
                 
-                # 表データ作成
-                # インデックス: Pass順序、カラム: Zone * 2 (配, 決)
                 table_data = []
-                
-                # データがあるPassのみ抽出
                 valid_passes = [p for p in PASS_ORDER if p in df_filtered["Pass"].unique()]
                 
                 for p_label in valid_passes:
                     row = {"Pass": p_label}
                     total_sets_in_pass = pass_counts.get(p_label, 0)
-                    
                     for z_label in ZONE_ORDER:
-                        # 該当するデータを探す
                         target = stats[(stats['Pass'] == p_label) & (stats['Zone'] == z_label)]
-                        
                         if not target.empty:
                             att = target.iloc[0]['attempts']
                             kill = target.iloc[0]['kills']
-                            
-                            # 配給率 = そのゾーンへの本数 / そのPassの総本数
                             dist_rate = (att / total_sets_in_pass * 100) if total_sets_in_pass > 0 else 0
-                            # 決定率 = そのゾーンでの得点 / そのゾーンへの本数
                             kill_rate = (kill / att * 100) if att > 0 else 0
-                            
                             row[f"{z_label} (配)"] = dist_rate
                             row[f"{z_label} (決)"] = kill_rate
                         else:
                             row[f"{z_label} (配)"] = 0.0
                             row[f"{z_label} (決)"] = 0.0
-                    
                     table_data.append(row)
                 
                 if table_data:
                     df_matrix = pd.DataFrame(table_data).set_index("Pass")
-                    
-                    # スタイリング (配=赤系, 決=青系)
-                    # カラムリスト作成
                     dist_cols = [c for c in df_matrix.columns if "(配)" in c]
                     kill_cols = [c for c in df_matrix.columns if "(決)" in c]
-                    
                     st.dataframe(
                         df_matrix.style
                         .format("{:.1f}%")
@@ -363,7 +378,6 @@ elif app_mode == "📈 トス配給分析":
                         use_container_width=True
                     )
 
-            # --- 散布図 ---
             st.markdown("---")
             st.markdown(f"### 🎯 セットアップ位置の散布図")
             try:
@@ -418,16 +432,47 @@ elif app_mode == "📊 試合入力":
     col_sc, col_mn, col_lg = st.columns([0.8, 1.2, 0.8])
     with col_sc:
         gs = st.session_state.game_state
+        
+        # スコアボード
         st.markdown(f"""
-        <div style="text-align: center; border: 2px solid #ccc; padding: 10px; border-radius: 10px;">
+        <div style="text-align: center; border: 2px solid #ccc; padding: 10px; border-radius: 10px; margin-bottom: 10px;">
             <h1 style="margin:0;">{gs['my_score']} - {gs['op_score']}</h1>
             <div style="display:flex; justify-content:space-between;">
-                <div style="color:blue;">{my_team_name}<br>Rot:{gs['my_rot']}</div>
+                <div style="color:blue; font-weight:bold;">{my_team_name}<br>Rot:{gs['my_rot']}</div>
                 <div style="color:grey;">{op_team_name}<br>Rot:{gs['op_rot']}</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
-        with st.expander("試合設定", expanded=True):
+        
+        # ★現在のローテーション表示 (Visual)
+        if st.session_state.my_service_order:
+            pos_map = get_current_positions(st.session_state.my_service_order, gs['my_rot'])
+            
+            # HTMLで簡易的なコート表示を作る
+            st.markdown("""
+            <style>
+                .court-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; border: 1px solid #ccc; padding: 5px; background: #f9f9f9; text-align: center; font-size: 0.8em; }
+                .court-cell { padding: 5px; border-radius: 5px; background: white; border: 1px solid #ddd; }
+                .court-net { grid-column: 1 / 4; border-bottom: 3px double #333; margin-bottom: 5px; font-weight: bold; }
+                .pos-label { font-size: 0.7em; color: #888; display: block; }
+                .player-name { font-weight: bold; color: #000; }
+            </style>
+            <div class="court-grid">
+                <div class="court-net">NET (Front)</div>
+                <div class="court-cell"><span class="pos-label">P4 (FL)</span><span class="player-name">{}</span></div>
+                <div class="court-cell"><span class="pos-label">P3 (FC)</span><span class="player-name">{}</span></div>
+                <div class="court-cell"><span class="pos-label">P2 (FR)</span><span class="player-name">{}</span></div>
+                
+                <div class="court-cell"><span class="pos-label">P5 (BL)</span><span class="player-name">{}</span></div>
+                <div class="court-cell"><span class="pos-label">P6 (BC)</span><span class="player-name">{}</span></div>
+                <div class="court-cell" style="background:#e6f3ff;"><span class="pos-label">P1 (Srv)</span><span class="player-name">{}</span></div>
+            </div>
+            """.format(
+                pos_map.get("P4(FL)", "?"), pos_map.get("P3(FC)", "?"), pos_map.get("P2(FR)", "?"),
+                pos_map.get("P5(BL)", "?"), pos_map.get("P6(BC)", "?"), pos_map.get("P1(BR)", "?")
+            ), unsafe_allow_html=True)
+        
+        with st.expander("試合設定", expanded=False):
             match_name = st.text_input("試合名", "練習試合")
             set_no = st.number_input("Set", 1, 5, 1)
 
@@ -580,17 +625,28 @@ elif app_mode == "📊 試合入力":
 
     with col_lg:
         st.header("3. Log")
+        
+        # ★Undoボタン
         if st.session_state.match_data:
             if st.button("↩️ 1つ戻る (Undo)"):
                 st.session_state.match_data.pop()
                 st.warning("直前の記録を削除")
                 st.rerun()
+        
+        # ★リストと送信ボタン (常に表示し、データがないときはdisabledにする)
         if st.session_state.match_data:
             df = pd.DataFrame(st.session_state.match_data)
             cols_to_show = ["MyScore", "Pass", "Setter", "Zone", "Result"]
             valid_cols = [c for c in cols_to_show if c in df.columns]
             st.dataframe(df[valid_cols].iloc[::-1], height=300, hide_index=True)
-            if st.button("💾 データ送信 (保存してリストをクリア)"):
+            
+            # データがある時
+            if st.button("💾 データ送信 (保存してリストをクリア)", type="primary"):
                 save_match_data_to_sheet(df)
                 st.success("クラウド保存完了")
                 st.session_state.match_data = []
+                st.rerun()
+        else:
+            st.info("記録待ち...")
+            # データがない時は押せないボタンを表示しておく
+            st.button("💾 データ送信 (保存してリストをクリア)", disabled=True)
