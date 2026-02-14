@@ -7,6 +7,9 @@ import re
 import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+import io
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 import cv2
@@ -16,7 +19,7 @@ import numpy as np
 import math
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v34 (Back View)")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v35")
 
 # ゾーンと色の定義
 ZONE_COLORS = {
@@ -39,7 +42,6 @@ KP_L_WRIST = 9
 KP_R_ANKLE = 16
 KP_L_ANKLE = 15
 
-# キーポイント名称マップ
 KEYPOINT_NAMES = {
     0: "Nose", 1: "L-Eye", 2: "R-Eye", 3: "L-Ear", 4: "R-Ear",
     5: "L-Shoulder", 6: "R-Shoulder", 7: "L-Elbow", 8: "R-Elbow",
@@ -73,17 +75,21 @@ def get_court_image():
     img.save("court.png")
     return img
 
-# --- Google Sheets 接続設定 ---
-def connect_to_gsheet():
+# --- Google API 接続設定 (Sheets & Drive) ---
+def get_gcp_creds():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
+        return creds
     except Exception as e:
         st.error(f"認証エラー: {e}")
         st.stop()
+
+def connect_to_gsheet():
+    creds = get_gcp_creds()
+    client = gspread.authorize(creds)
     SPREADSHEET_ID = "14o1wNqQIrJPy9IAuQ7PSCwP6NyA4O5dZrn_FmFoSqLQ"
     try:
         sheet = client.open_by_key(SPREADSHEET_ID)
@@ -91,6 +97,39 @@ def connect_to_gsheet():
     except gspread.exceptions.APIError:
         st.error("エラー：スプレッドシートが見つかりません。")
         st.stop()
+
+def connect_to_drive():
+    creds = get_gcp_creds()
+    service = build('drive', 'v3', credentials=creds)
+    return service
+
+# --- Drive 操作関数 ---
+def upload_file_to_drive(file_obj, filename):
+    service = connect_to_drive()
+    file_metadata = {'name': filename, 'mimeType': 'video/mp4'}
+    media = MediaIoBaseUpload(file_obj, mimetype='video/mp4', resumable=True)
+    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    return file.get('id')
+
+def list_drive_files():
+    service = connect_to_drive()
+    # ビデオファイルのみ検索
+    results = service.files().list(
+        q="mimeType contains 'video' and trashed=false",
+        pageSize=20, fields="nextPageToken, files(id, name, createdTime)").execute()
+    items = results.get('files', [])
+    return items
+
+def download_file_from_drive(file_id):
+    service = connect_to_drive()
+    request = service.files().get_media(fileId=file_id)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while done is False:
+        status, done = downloader.next_chunk()
+    fh.seek(0)
+    return fh
 
 # --- データ読み書き関数 ---
 def load_players_from_sheet():
@@ -224,8 +263,9 @@ def get_current_positions(service_order, rotation):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v34 (Back View)")
-    app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "🎥 AI動作分析 (自動判定)", "📝 履歴編集", "👤 チーム管理"])
+    st.title("🏐 Analyst Pro v35")
+    # メニュー追加
+    app_mode = st.radio("メニュー", ["☁️ 動画保管庫 (Drive)", "📊 試合入力", "📈 トス配給分析", "🎥 AI動作分析 (自動判定)", "📝 履歴編集", "👤 チーム管理"])
     st.markdown("---")
     
     team_list = list(st.session_state.players_db.keys())
@@ -254,8 +294,46 @@ with st.sidebar:
 #  UI メイン
 # ==========================================
 
+# --- モード: ☁️ 動画保管庫 (Drive) ---
+if app_mode == "☁️ 動画保管庫 (Drive)":
+    st.header("☁️ 動画保管庫 (Google Drive)")
+    st.info("スマホで撮影した動画をここにアップロードしておくと、PCの「AI動作分析」画面からすぐに呼び出せます。")
+    
+    # アップロード部分
+    st.subheader("📤 動画アップロード")
+    uploaded_file = st.file_uploader("動画を選択 (mp4, mov)", type=['mp4', 'mov'])
+    
+    if uploaded_file:
+        if st.button("クラウドへ保存開始", type="primary"):
+            with st.spinner("Google Driveへアップロード中... (時間がかかります)"):
+                try:
+                    # FileLikeObjectをそのまま渡す
+                    file_id = upload_file_to_drive(uploaded_file, uploaded_file.name)
+                    st.success(f"保存完了！ (ID: {file_id})")
+                    st.balloons()
+                except Exception as e:
+                    st.error(f"アップロード失敗: {e}")
+
+    st.markdown("---")
+    
+    # ファイル一覧表示
+    st.subheader("📂 保存済み動画リスト")
+    if st.button("リスト更新"):
+        pass # 再描画トリガー
+        
+    try:
+        files = list_drive_files()
+        if files:
+            df_files = pd.DataFrame(files)
+            st.dataframe(df_files, hide_index=True, use_container_width=True)
+        else:
+            st.warning("保存された動画はありません。")
+    except Exception as e:
+        st.error(f"リスト取得エラー: {e}")
+
+
 # --- モード1：チーム管理 ---
-if app_mode == "👤 チーム管理":
+elif app_mode == "👤 チーム管理":
     st.header("👤 チーム・選手管理")
     c1, c2 = st.columns([1, 2])
     with c1:
@@ -298,7 +376,7 @@ if app_mode == "👤 チーム管理":
 
 # --- モード2：データ分析 ---
 elif app_mode == "📈 トス配給分析":
-    st.header("📈 セッター配給分析 (Setter Distribution)")
+    st.header("📈 セッター配給分析")
     df_session = pd.DataFrame(st.session_state.match_data)
     df_history = load_match_history()
     df_all = pd.concat([df_history, df_session], ignore_index=True)
@@ -381,24 +459,48 @@ elif app_mode == "📈 トス配給分析":
             except Exception as e:
                 st.error(f"画像描画エラー: {e}")
 
-# --- モード3：AI動作分析 (自動判定・後ろ視点) ---
+# --- モード3：AI動作分析 (Drive連携) ---
 elif app_mode == "🎥 AI動作分析 (自動判定)":
     st.header("🎥 AIによる自動動作判定 (Back View)")
-    st.info("💡 後ろからの視点で判定します。エンドラインより手前(下)ならサーブ、奥(上)ならスパイクとみなします。")
     
     with st.expander("🛠 エンドラインの設定 (判定基準)", expanded=True):
-        st.write("画面の高さを100%としたとき、エンドライン(横線)の位置はどこですか？")
-        # ★変更点：縦軸(Y)のスライダーに変更
         end_line_percent_y = st.slider("エンドライン位置 (上端=0, 下端=100)", 0, 100, 80)
         st.caption(f"上から {end_line_percent_y}% の位置より下側を「サーブエリア」とみなします。")
 
-    video_file = st.file_uploader("動画ファイルを選択 (mp4, mov)", type=['mp4', 'mov'])
+    # データソース選択
+    source_type = st.radio("動画ソース", ["📤 PCからアップロード", "📂 クラウド(Drive)から選択"], horizontal=True)
+    
+    tfile = None
+    
+    if source_type == "📤 PCからアップロード":
+        video_file = st.file_uploader("動画ファイルを選択 (mp4, mov)", type=['mp4', 'mov'])
+        if video_file:
+            tfile = tempfile.NamedTemporaryFile(delete=False)
+            tfile.write(video_file.read())
+            
+    elif source_type == "📂 クラウド(Drive)から選択":
+        try:
+            files = list_drive_files()
+            if files:
+                file_options = {f['name']: f['id'] for f in files}
+                selected_filename = st.selectbox("解析する動画を選択", list(file_options.keys()))
+                if selected_filename:
+                    # ダウンロードして一時ファイル化
+                    if st.button("クラウドからロードする"):
+                        with st.spinner("クラウドからダウンロード中..."):
+                            file_id = file_options[selected_filename]
+                            fh = download_file_from_drive(file_id)
+                            tfile = tempfile.NamedTemporaryFile(delete=False)
+                            tfile.write(fh.read())
+                            st.success("ロード完了！解析を開始できます。")
+            else:
+                st.warning("クラウドに動画がありません。「☁️ 動画保管庫」からアップロードしてください。")
+        except Exception as e:
+            st.error(f"Driveエラー: {e}")
 
-    if video_file is not None:
-        tfile = tempfile.NamedTemporaryFile(delete=False) 
-        tfile.write(video_file.read())
-        
-        if st.button("🚀 解析・自動判定開始"):
+    # 解析実行部分 (共通)
+    if tfile:
+        if st.button("🚀 解析・自動判定開始", type="primary"):
             st.text("モデルをロード中...")
             try:
                 pose_model, det_model = load_models()
@@ -424,7 +526,7 @@ elif app_mode == "🎥 AI動作分析 (自動判定)":
                     if cooldown > 0: cooldown -= 1
                     if frame_count % skip_frames != 0: continue
                     
-                    # 1. ボール検出
+                    # ボール検出
                     ball_results = det_model(frame, classes=[32], conf=0.3, verbose=False)
                     ball_box = None
                     if len(ball_results[0].boxes) > 0:
@@ -434,7 +536,7 @@ elif app_mode == "🎥 AI動作分析 (自動判定)":
                         ball_box = (ball_cx, ball_cy)
                         cv2.circle(frame, (int(ball_cx), int(ball_cy)), 10, (0, 255, 255), -1)
 
-                    # 2. 骨格検知
+                    # 骨格検知
                     pose_results = pose_model(frame, conf=0.5, verbose=False)
                     annotated_frame = pose_results[0].plot()
                     action_text = ""
@@ -443,7 +545,6 @@ elif app_mode == "🎥 AI動作分析 (自動判定)":
                         keypoints_tensor = pose_results[0].keypoints.xy.cpu().numpy()
                         
                         for person_id, kpts in enumerate(keypoints_tensor):
-                            # データ保存用
                             row_data = {"Frame": frame_count, "PersonID": person_id}
                             if ball_box:
                                 row_data["Ball_X"] = ball_box[0]; row_data["Ball_Y"] = ball_box[1]
@@ -454,7 +555,6 @@ elif app_mode == "🎥 AI動作分析 (自動判定)":
                                 row_data[f"{part_name}_X"] = x; row_data[f"{part_name}_Y"] = y
                             raw_pose_data.append(row_data)
                             
-                            # 判定ロジック
                             if ball_box is None: continue
                             nose = kpts[KP_NOSE]
                             r_wrist = kpts[KP_R_WRIST]
@@ -471,10 +571,7 @@ elif app_mode == "🎥 AI動作分析 (自動判定)":
                             is_overhand = (r_wrist[1] < nose[1]) or (l_wrist[1] < nose[1])
                             
                             if is_hit and is_overhand and cooldown == 0:
-                                # ★バックビュー用ロジック：Y座標で判定
                                 line_y = height * (end_line_percent_y / 100)
-                                
-                                # 足がラインより下(Yが大きい)なら手前＝サーブ
                                 if r_ankle[1] > line_y:
                                     action_text = "SERVE 🏐"
                                     detected_events.append({"Frame": frame_count, "Time": f"{frame_count/30:.1f}s", "Action": "Serve"})
@@ -487,7 +584,6 @@ elif app_mode == "🎥 AI動作分析 (自動判定)":
                     if action_text:
                         cv2.putText(annotated_frame, action_text, (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 5)
                     
-                    # ★エンドライン（水平線）の描画
                     line_y_int = int(height * (end_line_percent_y / 100))
                     cv2.line(annotated_frame, (0, line_y_int), (width, line_y_int), (255, 0, 0), 2)
 
