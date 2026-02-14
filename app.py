@@ -16,7 +16,7 @@ import numpy as np
 import math
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v33")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v34 (Back View)")
 
 # ゾーンと色の定義
 ZONE_COLORS = {
@@ -39,7 +39,7 @@ KP_L_WRIST = 9
 KP_R_ANKLE = 16
 KP_L_ANKLE = 15
 
-# キーポイント名称マップ (CSV出力用)
+# キーポイント名称マップ
 KEYPOINT_NAMES = {
     0: "Nose", 1: "L-Eye", 2: "R-Eye", 3: "L-Ear", 4: "R-Ear",
     5: "L-Shoulder", 6: "R-Shoulder", 7: "L-Elbow", 8: "R-Elbow",
@@ -224,7 +224,7 @@ def get_current_positions(service_order, rotation):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v33")
+    st.title("🏐 Analyst Pro v34 (Back View)")
     app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "🎥 AI動作分析 (自動判定)", "📝 履歴編集", "👤 チーム管理"])
     st.markdown("---")
     
@@ -381,14 +381,16 @@ elif app_mode == "📈 トス配給分析":
             except Exception as e:
                 st.error(f"画像描画エラー: {e}")
 
-# --- モード3：AI動作分析 (自動判定 & データ保存) ---
+# --- モード3：AI動作分析 (自動判定・後ろ視点) ---
 elif app_mode == "🎥 AI動作分析 (自動判定)":
-    st.header("🎥 AIによる自動動作判定")
-    st.info("解析完了後に、イベント一覧と生座標データの両方をダウンロードできます。")
+    st.header("🎥 AIによる自動動作判定 (Back View)")
+    st.info("💡 後ろからの視点で判定します。エンドラインより手前(下)ならサーブ、奥(上)ならスパイクとみなします。")
     
     with st.expander("🛠 エンドラインの設定 (判定基準)", expanded=True):
-        st.write("画面の横幅を100%としたとき、エンドラインの位置はどこですか？")
-        end_line_percent = st.slider("エンドライン位置 (左端=0, 右端=100)", 0, 100, 20)
+        st.write("画面の高さを100%としたとき、エンドライン(横線)の位置はどこですか？")
+        # ★変更点：縦軸(Y)のスライダーに変更
+        end_line_percent_y = st.slider("エンドライン位置 (上端=0, 下端=100)", 0, 100, 80)
+        st.caption(f"上から {end_line_percent_y}% の位置より下側を「サーブエリア」とみなします。")
 
     video_file = st.file_uploader("動画ファイルを選択 (mp4, mov)", type=['mp4', 'mov'])
 
@@ -397,8 +399,7 @@ elif app_mode == "🎥 AI動作分析 (自動判定)":
         tfile.write(video_file.read())
         
         if st.button("🚀 解析・自動判定開始"):
-            st.text("モデルをロード中... (処理には時間がかかります)")
-            
+            st.text("モデルをロード中...")
             try:
                 pose_model, det_model = load_models()
                 cap = cv2.VideoCapture(tfile.name)
@@ -407,13 +408,10 @@ elif app_mode == "🎥 AI動作分析 (自動判定)":
                 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                
                 progress_bar = st.progress(0)
                 
                 detected_events = []
-                # ★追加：生座標データを保存するリスト
                 raw_pose_data = []
-                
                 frame_count = 0
                 skip_frames = 2
                 cooldown = 0
@@ -439,35 +437,25 @@ elif app_mode == "🎥 AI動作分析 (自動判定)":
                     # 2. 骨格検知
                     pose_results = pose_model(frame, conf=0.5, verbose=False)
                     annotated_frame = pose_results[0].plot()
-                    
-                    # 3. データ抽出 & 判定
                     action_text = ""
                     
                     if pose_results[0].keypoints is not None:
                         keypoints_tensor = pose_results[0].keypoints.xy.cpu().numpy()
                         
                         for person_id, kpts in enumerate(keypoints_tensor):
-                            # --- A. 生データの保存 (v33追加) ---
-                            # 各フレーム、各個人の全関節データを記録
+                            # データ保存用
                             row_data = {"Frame": frame_count, "PersonID": person_id}
-                            # ボールがあれば記録
                             if ball_box:
-                                row_data["Ball_X"] = ball_box[0]
-                                row_data["Ball_Y"] = ball_box[1]
+                                row_data["Ball_X"] = ball_box[0]; row_data["Ball_Y"] = ball_box[1]
                             else:
-                                row_data["Ball_X"] = 0
-                                row_data["Ball_Y"] = 0
-                                
+                                row_data["Ball_X"] = 0; row_data["Ball_Y"] = 0
                             for kp_idx, (x, y) in enumerate(kpts):
                                 part_name = KEYPOINT_NAMES.get(kp_idx, f"kp{kp_idx}")
-                                row_data[f"{part_name}_X"] = x
-                                row_data[f"{part_name}_Y"] = y
+                                row_data[f"{part_name}_X"] = x; row_data[f"{part_name}_Y"] = y
                             raw_pose_data.append(row_data)
                             
-                            # --- B. 自動判定ロジック (v32継続) ---
-                            # ボールがないと判定できないのでスキップ
+                            # 判定ロジック
                             if ball_box is None: continue
-                            
                             nose = kpts[KP_NOSE]
                             r_wrist = kpts[KP_R_WRIST]
                             l_wrist = kpts[KP_L_WRIST]
@@ -483,8 +471,11 @@ elif app_mode == "🎥 AI動作分析 (自動判定)":
                             is_overhand = (r_wrist[1] < nose[1]) or (l_wrist[1] < nose[1])
                             
                             if is_hit and is_overhand and cooldown == 0:
-                                line_x = width * (end_line_percent / 100)
-                                if r_ankle[0] > 0 and r_ankle[0] < line_x:
+                                # ★バックビュー用ロジック：Y座標で判定
+                                line_y = height * (end_line_percent_y / 100)
+                                
+                                # 足がラインより下(Yが大きい)なら手前＝サーブ
+                                if r_ankle[1] > line_y:
                                     action_text = "SERVE 🏐"
                                     detected_events.append({"Frame": frame_count, "Time": f"{frame_count/30:.1f}s", "Action": "Serve"})
                                 else:
@@ -496,8 +487,9 @@ elif app_mode == "🎥 AI動作分析 (自動判定)":
                     if action_text:
                         cv2.putText(annotated_frame, action_text, (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 5)
                     
-                    line_x_int = int(width * (end_line_percent / 100))
-                    cv2.line(annotated_frame, (line_x_int, 0), (line_x_int, height), (255, 0, 0), 2)
+                    # ★エンドライン（水平線）の描画
+                    line_y_int = int(height * (end_line_percent_y / 100))
+                    cv2.line(annotated_frame, (0, line_y_int), (width, line_y_int), (255, 0, 0), 2)
 
                     annotated_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
                     st_frame.image(annotated_frame, caption=f"Frame: {frame_count}", use_container_width=True)
@@ -509,8 +501,6 @@ elif app_mode == "🎥 AI動作分析 (自動判定)":
                 st.success("解析完了！")
                 
                 c_dl1, c_dl2 = st.columns(2)
-                
-                # ダウンロードボタン 1: イベントリスト
                 with c_dl1:
                     if detected_events:
                         st.write("##### 📊 検出イベント")
@@ -520,8 +510,6 @@ elif app_mode == "🎥 AI動作分析 (自動判定)":
                         st.download_button("📥 イベントリストを保存 (CSV)", csv_events, "events.csv", "text/csv")
                     else:
                         st.warning("イベントは検出されませんでした。")
-
-                # ダウンロードボタン 2: 生座標データ
                 with c_dl2:
                     if raw_pose_data:
                         st.write("##### 🦴 生座標データ (全フレーム)")
