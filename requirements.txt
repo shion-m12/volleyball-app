@@ -7,3 +7,4 @@ oauth2client
 matplotlib
 ultralytics
 opencv-python-headless
+google-api-python-client
