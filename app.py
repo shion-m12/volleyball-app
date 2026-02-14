@@ -9,9 +9,13 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+import cv2
+import tempfile
+from ultralytics import YOLO
+import numpy as np
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v29.2")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v30")
 
 # ゾーンと色の定義
 ZONE_COLORS = {
@@ -27,6 +31,12 @@ ZONE_COLORS = {
 # 表示順序
 PASS_ORDER = ["Aパス", "Bパス", "Cパス", "その他", "相手サーブミス", "失敗 (エース)"]
 ZONE_ORDER = ["レフト(L)", "センター(C)", "ライト(R)", "レフトバック(LB)", "センターバック(CB)", "ライトバック(RB)", "なし"]
+
+# --- YOLOv8モデルのロード (キャッシュ化) ---
+@st.cache_resource
+def load_yolo_model():
+    # 初回は自動でダウンロードされます (yolov8n-pose.pt: 軽量な骨格推定モデル)
+    return YOLO('yolov8n-pose.pt')
 
 # --- コート画像を準備する関数 ---
 def get_court_image():
@@ -187,7 +197,6 @@ def remove_point(winner):
     else:
         if gs["op_score"] > 0: gs["op_score"] -= 1
 
-# ★現在のローテーション位置を取得する関数
 def get_current_positions(service_order, rotation):
     if not service_order or len(service_order) < 6:
         return {}
@@ -207,8 +216,9 @@ def get_current_positions(service_order, rotation):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v29.2")
-    app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "📝 履歴編集", "👤 チーム管理"])
+    st.title("🏐 Analyst Pro v30")
+    # メニューにAI動画解析を追加
+    app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "🎥 AI動画解析 (Beta)", "📝 履歴編集", "👤 チーム管理"])
     st.markdown("---")
     
     team_list = list(st.session_state.players_db.keys())
@@ -282,11 +292,9 @@ if app_mode == "👤 チーム管理":
 # --- モード2：データ分析 ---
 elif app_mode == "📈 トス配給分析":
     st.header("📈 セッター配給分析 (Setter Distribution)")
-    
     df_session = pd.DataFrame(st.session_state.match_data)
     df_history = load_match_history()
     df_all = pd.concat([df_history, df_session], ignore_index=True)
-    
     if df_all.empty:
         st.info("データがありません。")
     else:
@@ -296,7 +304,6 @@ elif app_mode == "📈 トス配給分析":
             df_all["X"] = pd.to_numeric(df_all["X"], errors='coerce')
             df_all["Y"] = pd.to_numeric(df_all["Y"], errors='coerce')
             df_all = df_all.dropna(subset=["X", "Y"])
-            
             with st.expander("🔍 フィルタリング設定", expanded=True):
                 c_f1, c_f2 = st.columns(2)
                 teams = df_all["Team"].unique()
@@ -304,31 +311,24 @@ elif app_mode == "📈 トス配給分析":
                 if my_team_name in teams:
                     temp_list = list(teams)
                     default_idx = temp_list.index(my_team_name)
-                    
                 sel_team = c_f1.selectbox("チーム", teams, index=default_idx)
                 df_filtered = df_all[df_all["Team"] == sel_team]
-                
                 if "Setter" in df_filtered.columns:
                     setters_raw = [s for s in list(df_filtered["Setter"].unique()) if s != "なし"]
                     setters = ["全員"] + setters_raw
                     sel_setter = c_f2.selectbox("分析対象セッター", setters)
                     if sel_setter != "全員":
                         df_filtered = df_filtered[df_filtered["Setter"] == sel_setter]
-            
-            # マトリクス表
             if not df_filtered.empty and "Pass" in df_filtered.columns and "Zone" in df_filtered.columns:
                 st.markdown(f"### 📊 レセプション別 配給・決定率一覧 - {sel_setter}")
                 st.caption("配: 配給率 (本数シェア%) / 決: 決定率 (得点確率%)")
-                
                 pass_counts = df_filtered["Pass"].value_counts()
                 stats = df_filtered.groupby(['Pass', 'Zone']).agg(
                     attempts=('Result', 'count'),
                     kills=('Result', lambda x: (x == '得点 (Kill)').sum())
                 ).reset_index()
-                
                 table_data = []
                 valid_passes = [p for p in PASS_ORDER if p in df_filtered["Pass"].unique()]
-                
                 for p_label in valid_passes:
                     row = {"Pass": p_label}
                     total_sets_in_pass = pass_counts.get(p_label, 0)
@@ -345,7 +345,6 @@ elif app_mode == "📈 トス配給分析":
                             row[f"{z_label} (配)"] = 0.0
                             row[f"{z_label} (決)"] = 0.0
                     table_data.append(row)
-                
                 if table_data:
                     df_matrix = pd.DataFrame(table_data).set_index("Pass")
                     dist_cols = [c for c in df_matrix.columns if "(配)" in c]
@@ -357,7 +356,6 @@ elif app_mode == "📈 トス配給分析":
                         .background_gradient(cmap="Blues", subset=kill_cols, vmin=0, vmax=100),
                         use_container_width=True
                     )
-
             st.markdown("---")
             st.markdown(f"### 🎯 セットアップ位置の散布図")
             try:
@@ -376,7 +374,68 @@ elif app_mode == "📈 トス配給分析":
             except Exception as e:
                 st.error(f"画像描画エラー: {e}")
 
-# --- モード3：履歴編集 ---
+# --- モード3：AI動画解析 (Beta) ---
+elif app_mode == "🎥 AI動画解析 (Beta)":
+    st.header("🎥 AI動画解析 (YOLOv8 Pose)")
+    st.warning("⚠️ Beta版です。Streamlit Cloudでは処理速度が遅い場合があります。PCローカル環境推奨。")
+    st.write("動画をアップロードすると、AIが「選手（骨格）」と「ボール」を認識して可視化します。")
+
+    # 動画アップロード
+    video_file = st.file_uploader("動画ファイルを選択 (mp4, mov)", type=['mp4', 'mov'])
+
+    if video_file is not None:
+        # 一時ファイルに保存
+        tfile = tempfile.NamedTemporaryFile(delete=False) 
+        tfile.write(video_file.read())
+        
+        # 処理開始ボタン
+        if st.button("🚀 解析開始"):
+            st.text("AIモデルをロード中...")
+            try:
+                model = load_yolo_model()
+                
+                cap = cv2.VideoCapture(tfile.name)
+                st_frame = st.empty() # フレーム表示用プレースホルダー
+                
+                # プログレスバー
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                progress_bar = st.progress(0)
+                
+                frame_count = 0
+                skip_frames = 3 # 処理を軽くするためにフレームをスキップ (3フレームに1回処理)
+                
+                while cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    
+                    frame_count += 1
+                    if frame_count % skip_frames != 0:
+                        continue
+                    
+                    # YOLO推論 (conf=0.5で信頼度の低いものはカット)
+                    results = model(frame, conf=0.5)
+                    
+                    # 結果を描画
+                    annotated_frame = results[0].plot()
+                    
+                    # OpenCV(BGR) -> Pillow(RGB)変換
+                    annotated_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+                    
+                    # 画面表示
+                    st_frame.image(annotated_frame, caption=f"Frame: {frame_count}/{total_frames}", use_container_width=True)
+                    
+                    # プログレスバー更新
+                    if total_frames > 0:
+                        progress_bar.progress(min(frame_count / total_frames, 1.0))
+                
+                cap.release()
+                st.success("解析完了！")
+                
+            except Exception as e:
+                st.error(f"解析エラー: {e}")
+
+# --- モード4：履歴編集 ---
 elif app_mode == "📝 履歴編集":
     st.header("📝 履歴データの閲覧・編集")
     df_all = load_match_history()
@@ -406,14 +465,12 @@ elif app_mode == "📝 履歴編集":
                         st.rerun()
         else: st.error("Match列なし")
 
-# --- モード4：試合入力 ---
+# --- モード5：試合入力 ---
 elif app_mode == "📊 試合入力":
     image = get_court_image()
     col_sc, col_mn, col_lg = st.columns([0.8, 1.2, 0.8])
     with col_sc:
         gs = st.session_state.game_state
-        
-        # スコアボード
         st.markdown(f"""
         <div style="text-align: center; border: 2px solid #ccc; padding: 10px; border-radius: 10px; margin-bottom: 10px;">
             <h1 style="margin:0;">{gs['my_score']} - {gs['op_score']}</h1>
