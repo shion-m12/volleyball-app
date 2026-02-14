@@ -1,3 +1,7 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+ultralytics
 streamlit
 pandas
 streamlit-image-coordinates
@@ -7,4 +11,3 @@ oauth2client
 matplotlib
 opencv-python-headless
 google-api-python-client
-ultralytics
