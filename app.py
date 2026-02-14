@@ -19,10 +19,10 @@ import numpy as np
 import math
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v36.3")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v37")
 
-# ★★★ 設定済み: あなたのGoogleドライブ共有フォルダID ★★★
-TARGET_FOLDER_ID = "1F1hTSQcYV3QRpz0PBrx5m4U-9TxE"
+# ★★★ 修正済み: 新しいフォルダIDを設定しました ★★★
+TARGET_FOLDER_ID = "1F1hTSQcYV3QRpz0PBrx5m4U-9TxE_bgE"
 
 # ゾーンと色の定義
 ZONE_COLORS = {
@@ -275,7 +275,7 @@ def get_current_positions(service_order, rotation):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v36.3")
+    st.title("🏐 Analyst Pro v37")
     app_mode = st.radio("メニュー", ["🎥 AI動作分析 (Drive)", "📊 試合入力", "📈 トス配給分析", "📝 履歴編集", "👤 チーム管理"])
     st.markdown("---")
     
@@ -475,7 +475,8 @@ elif app_mode == "🎥 AI動作分析 (Drive)":
                             tfile.write(fh.read())
                             st.success(f"「{selected_filename}」をロードしました！解析ボタンを押してください。")
             else:
-                st.info("このフォルダにはまだ動画がありません。スマホのGoogleドライブアプリでアップロードしてください。")
+                st.warning(f"フォルダ (ID: {TARGET_FOLDER_ID}) に動画が見つかりません。")
+                st.info("スマホのGoogleドライブアプリで、共有フォルダに動画をアップロードしてください。")
         except Exception as e:
             st.error(f"Driveエラー: {e}")
 
