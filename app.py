@@ -19,7 +19,7 @@ import numpy as np
 import math
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v36.2")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v36.3")
 
 # ★★★ 設定済み: あなたのGoogleドライブ共有フォルダID ★★★
 TARGET_FOLDER_ID = "1F1hTSQcYV3QRpz0PBrx5m4U-9TxE"
@@ -106,7 +106,7 @@ def connect_to_drive():
     service = build('drive', 'v3', credentials=creds)
     return service
 
-# --- Drive 操作関数 ---
+# --- Drive 操作関数 (共有フォルダ対応版) ---
 def list_drive_files(folder_id):
     service = connect_to_drive()
     query = f"'{folder_id}' in parents and mimeType contains 'video' and trashed=false"
@@ -117,7 +117,19 @@ def list_drive_files(folder_id):
         items = results.get('files', [])
         return items
     except Exception as e:
-        st.error(f"フォルダアクセスエラー: {e}")
+        # 404エラーの場合は分かりやすいメッセージを返す
+        if "404" in str(e) or "File not found" in str(e):
+            st.error("🚨 エラー: 指定されたフォルダが見つかりません。")
+            st.warning("""
+            【原因】
+            1. フォルダIDが間違っている。
+            2. **Googleドライブの共有設定で、サービスアカウントのメールアドレスが招待されていない。**
+            
+            【対策】
+            サイドバーの下にあるメールアドレスをコピーし、Googleドライブのフォルダ共有設定で「編集者」として追加してください。
+            """)
+        else:
+            st.error(f"Driveアクセスエラー: {e}")
         return []
 
 def download_file_from_drive(file_id):
@@ -263,8 +275,19 @@ def get_current_positions(service_order, rotation):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v36.2")
+    st.title("🏐 Analyst Pro v36.3")
     app_mode = st.radio("メニュー", ["🎥 AI動作分析 (Drive)", "📊 試合入力", "📈 トス配給分析", "📝 履歴編集", "👤 チーム管理"])
+    st.markdown("---")
+    
+    # ★サービスアカウントのメールアドレスを表示 (招待用)
+    try:
+        creds_info = dict(st.secrets["gcp_service_account"])
+        sa_email = creds_info.get("client_email", "不明")
+        st.caption("📧 このメアドをフォルダに招待してください:")
+        st.code(sa_email, language=None)
+    except:
+        st.error("Secretsの設定エラー")
+
     st.markdown("---")
     
     team_list = list(st.session_state.players_db.keys())
@@ -452,11 +475,11 @@ elif app_mode == "🎥 AI動作分析 (Drive)":
                             tfile.write(fh.read())
                             st.success(f"「{selected_filename}」をロードしました！解析ボタンを押してください。")
             else:
-                st.warning(f"フォルダ (ID: {TARGET_FOLDER_ID}) に動画が見つかりません。")
-                st.info("スマホのGoogleドライブアプリで、共有フォルダに動画をアップロードしてください。")
+                st.info("このフォルダにはまだ動画がありません。スマホのGoogleドライブアプリでアップロードしてください。")
         except Exception as e:
             st.error(f"Driveエラー: {e}")
 
+    # 解析実行部分 (ロード済みの場合のみ表示)
     if tfile:
         if st.button("🚀 解析・自動判定開始", type="primary"):
             st.text("モデルをロード中... (これには数分かかる場合があります)")
@@ -484,6 +507,7 @@ elif app_mode == "🎥 AI動作分析 (Drive)":
                     if cooldown > 0: cooldown -= 1
                     if frame_count % skip_frames != 0: continue
                     
+                    # ボール検出
                     ball_results = det_model(frame, classes=[32], conf=0.3, verbose=False)
                     ball_box = None
                     if len(ball_results[0].boxes) > 0:
@@ -493,6 +517,7 @@ elif app_mode == "🎥 AI動作分析 (Drive)":
                         ball_box = (ball_cx, ball_cy)
                         cv2.circle(frame, (int(ball_cx), int(ball_cy)), 10, (0, 255, 255), -1)
 
+                    # 骨格検知
                     pose_results = pose_model(frame, conf=0.5, verbose=False)
                     annotated_frame = pose_results[0].plot()
                     action_text = ""
