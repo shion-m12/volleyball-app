@@ -5,3 +5,5 @@ Pillow
 gspread
 oauth2client
 matplotlib
+ultralytics
+opencv-python-headless
