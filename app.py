@@ -13,9 +13,10 @@ import cv2
 import tempfile
 from ultralytics import YOLO
 import numpy as np
+import math
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v30")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v33")
 
 # ゾーンと色の定義
 ZONE_COLORS = {
@@ -28,15 +29,30 @@ ZONE_COLORS = {
     "なし": ("gray", "None")
 }
 
-# 表示順序
 PASS_ORDER = ["Aパス", "Bパス", "Cパス", "その他", "相手サーブミス", "失敗 (エース)"]
 ZONE_ORDER = ["レフト(L)", "センター(C)", "ライト(R)", "レフトバック(LB)", "センターバック(CB)", "ライトバック(RB)", "なし"]
 
-# --- YOLOv8モデルのロード (キャッシュ化) ---
+# キーポイントID (YOLOv8 Pose)
+KP_NOSE = 0
+KP_R_WRIST = 10
+KP_L_WRIST = 9
+KP_R_ANKLE = 16
+KP_L_ANKLE = 15
+
+# キーポイント名称マップ (CSV出力用)
+KEYPOINT_NAMES = {
+    0: "Nose", 1: "L-Eye", 2: "R-Eye", 3: "L-Ear", 4: "R-Ear",
+    5: "L-Shoulder", 6: "R-Shoulder", 7: "L-Elbow", 8: "R-Elbow",
+    9: "L-Wrist", 10: "R-Wrist", 11: "L-Hip", 12: "R-Hip",
+    13: "L-Knee", 14: "R-Knee", 15: "L-Ankle", 16: "R-Ankle"
+}
+
+# --- AIモデルのロード ---
 @st.cache_resource
-def load_yolo_model():
-    # 初回は自動でダウンロードされます (yolov8n-pose.pt: 軽量な骨格推定モデル)
-    return YOLO('yolov8n-pose.pt')
+def load_models():
+    pose_model = YOLO('yolov8n-pose.pt')
+    det_model = YOLO('yolov8n.pt') 
+    return pose_model, det_model
 
 # --- コート画像を準備する関数 ---
 def get_court_image():
@@ -68,9 +84,7 @@ def connect_to_gsheet():
     except Exception as e:
         st.error(f"認証エラー: {e}")
         st.stop()
-    
     SPREADSHEET_ID = "14o1wNqQIrJPy9IAuQ7PSCwP6NyA4O5dZrn_FmFoSqLQ"
-    
     try:
         sheet = client.open_by_key(SPREADSHEET_ID)
         return sheet
@@ -198,27 +212,20 @@ def remove_point(winner):
         if gs["op_score"] > 0: gs["op_score"] -= 1
 
 def get_current_positions(service_order, rotation):
-    if not service_order or len(service_order) < 6:
-        return {}
+    if not service_order or len(service_order) < 6: return {}
     r_idx = rotation - 1
     indices = {
-        "P4(FL)": (3 + r_idx) % 6,
-        "P3(FC)": (2 + r_idx) % 6,
-        "P2(FR)": (1 + r_idx) % 6,
-        "P5(BL)": (4 + r_idx) % 6,
-        "P6(BC)": (5 + r_idx) % 6,
-        "P1(BR)": (0 + r_idx) % 6,
+        "P4(FL)": (3 + r_idx) % 6, "P3(FC)": (2 + r_idx) % 6, "P2(FR)": (1 + r_idx) % 6,
+        "P5(BL)": (4 + r_idx) % 6, "P6(BC)": (5 + r_idx) % 6, "P1(BR)": (0 + r_idx) % 6,
     }
-    positions = {k: service_order[v] for k, v in indices.items()}
-    return positions
+    return {k: service_order[v] for k, v in indices.items()}
 
 # ==========================================
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v30")
-    # メニューにAI動画解析を追加
-    app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "🎥 AI動画解析 (Beta)", "📝 履歴編集", "👤 チーム管理"])
+    st.title("🏐 Analyst Pro v33")
+    app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "🎥 AI動作分析 (自動判定)", "📝 履歴編集", "👤 チーム管理"])
     st.markdown("---")
     
     team_list = list(st.session_state.players_db.keys())
@@ -374,63 +381,156 @@ elif app_mode == "📈 トス配給分析":
             except Exception as e:
                 st.error(f"画像描画エラー: {e}")
 
-# --- モード3：AI動画解析 (Beta) ---
-elif app_mode == "🎥 AI動画解析 (Beta)":
-    st.header("🎥 AI動画解析 (YOLOv8 Pose)")
-    st.warning("⚠️ Beta版です。Streamlit Cloudでは処理速度が遅い場合があります。PCローカル環境推奨。")
-    st.write("動画をアップロードすると、AIが「選手（骨格）」と「ボール」を認識して可視化します。")
+# --- モード3：AI動作分析 (自動判定 & データ保存) ---
+elif app_mode == "🎥 AI動作分析 (自動判定)":
+    st.header("🎥 AIによる自動動作判定")
+    st.info("解析完了後に、イベント一覧と生座標データの両方をダウンロードできます。")
+    
+    with st.expander("🛠 エンドラインの設定 (判定基準)", expanded=True):
+        st.write("画面の横幅を100%としたとき、エンドラインの位置はどこですか？")
+        end_line_percent = st.slider("エンドライン位置 (左端=0, 右端=100)", 0, 100, 20)
 
-    # 動画アップロード
     video_file = st.file_uploader("動画ファイルを選択 (mp4, mov)", type=['mp4', 'mov'])
 
     if video_file is not None:
-        # 一時ファイルに保存
         tfile = tempfile.NamedTemporaryFile(delete=False) 
         tfile.write(video_file.read())
         
-        # 処理開始ボタン
-        if st.button("🚀 解析開始"):
-            st.text("AIモデルをロード中...")
+        if st.button("🚀 解析・自動判定開始"):
+            st.text("モデルをロード中... (処理には時間がかかります)")
+            
             try:
-                model = load_yolo_model()
-                
+                pose_model, det_model = load_models()
                 cap = cv2.VideoCapture(tfile.name)
-                st_frame = st.empty() # フレーム表示用プレースホルダー
+                st_frame = st.empty()
                 
-                # プログレスバー
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                
                 progress_bar = st.progress(0)
                 
+                detected_events = []
+                # ★追加：生座標データを保存するリスト
+                raw_pose_data = []
+                
                 frame_count = 0
-                skip_frames = 3 # 処理を軽くするためにフレームをスキップ (3フレームに1回処理)
+                skip_frames = 2
+                cooldown = 0
                 
                 while cap.isOpened():
                     ret, frame = cap.read()
-                    if not ret:
-                        break
+                    if not ret: break
                     
                     frame_count += 1
-                    if frame_count % skip_frames != 0:
-                        continue
+                    if cooldown > 0: cooldown -= 1
+                    if frame_count % skip_frames != 0: continue
                     
-                    # YOLO推論 (conf=0.5で信頼度の低いものはカット)
-                    results = model(frame, conf=0.5)
+                    # 1. ボール検出
+                    ball_results = det_model(frame, classes=[32], conf=0.3, verbose=False)
+                    ball_box = None
+                    if len(ball_results[0].boxes) > 0:
+                        box = ball_results[0].boxes[0]
+                        bx1, by1, bx2, by2 = box.xyxy[0].cpu().numpy()
+                        ball_cx, ball_cy = (bx1+bx2)/2, (by1+by2)/2
+                        ball_box = (ball_cx, ball_cy)
+                        cv2.circle(frame, (int(ball_cx), int(ball_cy)), 10, (0, 255, 255), -1)
+
+                    # 2. 骨格検知
+                    pose_results = pose_model(frame, conf=0.5, verbose=False)
+                    annotated_frame = pose_results[0].plot()
                     
-                    # 結果を描画
-                    annotated_frame = results[0].plot()
+                    # 3. データ抽出 & 判定
+                    action_text = ""
                     
-                    # OpenCV(BGR) -> Pillow(RGB)変換
+                    if pose_results[0].keypoints is not None:
+                        keypoints_tensor = pose_results[0].keypoints.xy.cpu().numpy()
+                        
+                        for person_id, kpts in enumerate(keypoints_tensor):
+                            # --- A. 生データの保存 (v33追加) ---
+                            # 各フレーム、各個人の全関節データを記録
+                            row_data = {"Frame": frame_count, "PersonID": person_id}
+                            # ボールがあれば記録
+                            if ball_box:
+                                row_data["Ball_X"] = ball_box[0]
+                                row_data["Ball_Y"] = ball_box[1]
+                            else:
+                                row_data["Ball_X"] = 0
+                                row_data["Ball_Y"] = 0
+                                
+                            for kp_idx, (x, y) in enumerate(kpts):
+                                part_name = KEYPOINT_NAMES.get(kp_idx, f"kp{kp_idx}")
+                                row_data[f"{part_name}_X"] = x
+                                row_data[f"{part_name}_Y"] = y
+                            raw_pose_data.append(row_data)
+                            
+                            # --- B. 自動判定ロジック (v32継続) ---
+                            # ボールがないと判定できないのでスキップ
+                            if ball_box is None: continue
+                            
+                            nose = kpts[KP_NOSE]
+                            r_wrist = kpts[KP_R_WRIST]
+                            l_wrist = kpts[KP_L_WRIST]
+                            r_ankle = kpts[KP_R_ANKLE]
+                            
+                            if nose[0]==0 or r_wrist[0]==0: continue
+                            
+                            dist_r = math.hypot(ball_box[0] - r_wrist[0], ball_box[1] - r_wrist[1])
+                            dist_l = math.hypot(ball_box[0] - l_wrist[0], ball_box[1] - l_wrist[1])
+                            
+                            impact_threshold = 80
+                            is_hit = (dist_r < impact_threshold) or (dist_l < impact_threshold)
+                            is_overhand = (r_wrist[1] < nose[1]) or (l_wrist[1] < nose[1])
+                            
+                            if is_hit and is_overhand and cooldown == 0:
+                                line_x = width * (end_line_percent / 100)
+                                if r_ankle[0] > 0 and r_ankle[0] < line_x:
+                                    action_text = "SERVE 🏐"
+                                    detected_events.append({"Frame": frame_count, "Time": f"{frame_count/30:.1f}s", "Action": "Serve"})
+                                else:
+                                    action_text = "SPIKE 💥"
+                                    detected_events.append({"Frame": frame_count, "Time": f"{frame_count/30:.1f}s", "Action": "Spike"})
+                                cooldown = 15
+                                break 
+                    
+                    if action_text:
+                        cv2.putText(annotated_frame, action_text, (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 5)
+                    
+                    line_x_int = int(width * (end_line_percent / 100))
+                    cv2.line(annotated_frame, (line_x_int, 0), (line_x_int, height), (255, 0, 0), 2)
+
                     annotated_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+                    st_frame.image(annotated_frame, caption=f"Frame: {frame_count}", use_container_width=True)
                     
-                    # 画面表示
-                    st_frame.image(annotated_frame, caption=f"Frame: {frame_count}/{total_frames}", use_container_width=True)
-                    
-                    # プログレスバー更新
                     if total_frames > 0:
                         progress_bar.progress(min(frame_count / total_frames, 1.0))
                 
                 cap.release()
                 st.success("解析完了！")
+                
+                c_dl1, c_dl2 = st.columns(2)
+                
+                # ダウンロードボタン 1: イベントリスト
+                with c_dl1:
+                    if detected_events:
+                        st.write("##### 📊 検出イベント")
+                        df_events = pd.DataFrame(detected_events)
+                        st.dataframe(df_events, height=150)
+                        csv_events = df_events.to_csv(index=False).encode('utf-8')
+                        st.download_button("📥 イベントリストを保存 (CSV)", csv_events, "events.csv", "text/csv")
+                    else:
+                        st.warning("イベントは検出されませんでした。")
+
+                # ダウンロードボタン 2: 生座標データ
+                with c_dl2:
+                    if raw_pose_data:
+                        st.write("##### 🦴 生座標データ (全フレーム)")
+                        df_pose = pd.DataFrame(raw_pose_data)
+                        st.dataframe(df_pose.head(3), height=150)
+                        csv_pose = df_pose.to_csv(index=False).encode('utf-8')
+                        st.download_button("📥 骨格座標データを保存 (CSV)", csv_pose, "pose_raw.csv", "text/csv")
+                    else:
+                        st.warning("骨格データが取得できませんでした。")
                 
             except Exception as e:
                 st.error(f"解析エラー: {e}")
@@ -480,25 +580,29 @@ elif app_mode == "📊 試合入力":
             </div>
         </div>
         """, unsafe_allow_html=True)
-        
-        # ★現在のローテーション表示 (修正: Streamlit標準機能で描画)
         if st.session_state.my_service_order:
             pos_map = get_current_positions(st.session_state.my_service_order, gs['my_rot'])
-            
-            st.markdown("###### 🏐 現在のコート配置")
-            with st.container(border=True):
-                st.caption("ネット (NET)")
-                c_f4, c_f3, c_f2 = st.columns(3)
-                with c_f4: st.info(f"**P4 (FL)**\n\n{pos_map.get('P4(FL)', '?')}")
-                with c_f3: st.info(f"**P3 (FC)**\n\n{pos_map.get('P3(FC)', '?')}")
-                with c_f2: st.info(f"**P2 (FR)**\n\n{pos_map.get('P2(FR)', '?')}")
-                
-                st.markdown("---")
-                c_b5, c_b6, c_b1 = st.columns(3)
-                with c_b5: st.success(f"**P5 (BL)**\n\n{pos_map.get('P5(BL)', '?')}")
-                with c_b6: st.success(f"**P6 (BC)**\n\n{pos_map.get('P6(BC)', '?')}")
-                with c_b1: st.warning(f"**P1 (Srv)**\n\n{pos_map.get('P1(BR)', '?')}")
-        
+            st.markdown("""
+            <style>
+                .court-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; border: 1px solid #ccc; padding: 5px; background: #f9f9f9; text-align: center; font-size: 0.8em; }
+                .court-cell { padding: 5px; border-radius: 5px; background: white; border: 1px solid #ddd; }
+                .court-net { grid-column: 1 / 4; border-bottom: 3px double #333; margin-bottom: 5px; font-weight: bold; }
+                .pos-label { font-size: 0.7em; color: #888; display: block; }
+                .player-name { font-weight: bold; color: #000; }
+            </style>
+            """, unsafe_allow_html=True)
+            grid_html = f"""
+            <div class="court-grid">
+                <div class="court-net">NET (Front)</div>
+                <div class="court-cell"><span class="pos-label">P4 (FL)</span><span class="player-name">{pos_map.get("P4(FL)", "?")}</span></div>
+                <div class="court-cell"><span class="pos-label">P3 (FC)</span><span class="player-name">{pos_map.get("P3(FC)", "?")}</span></div>
+                <div class="court-cell"><span class="pos-label">P2 (FR)</span><span class="player-name">{pos_map.get("P2(FR)", "?")}</span></div>
+                <div class="court-cell"><span class="pos-label">P5 (BL)</span><span class="player-name">{pos_map.get("P5(BL)", "?")}</span></div>
+                <div class="court-cell"><span class="pos-label">P6 (BC)</span><span class="player-name">{pos_map.get("P6(BC)", "?")}</span></div>
+                <div class="court-cell" style="background:#e6f3ff;"><span class="pos-label">P1 (Srv)</span><span class="player-name">{pos_map.get("P1(BR)", "?")}</span></div>
+            </div>
+            """
+            st.markdown(grid_html, unsafe_allow_html=True)
         with st.expander("試合設定", expanded=False):
             match_name = st.text_input("試合名", "練習試合")
             set_no = st.number_input("Set", 1, 5, 1)
