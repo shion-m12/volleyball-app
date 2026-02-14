@@ -8,7 +8,7 @@ import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload
 import io
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
@@ -19,7 +19,11 @@ import numpy as np
 import math
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v35")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v36")
+
+# ★★★ ここにGoogleドライブの共有フォルダIDを貼り付けてください ★★★
+TARGET_FOLDER_ID = "ここにフォルダIDを貼り付ける" 
+# 例: "1aBcDeFgHiJkLmNoPqRsTuVwXyZ"
 
 # ゾーンと色の定義
 ZONE_COLORS = {
@@ -103,22 +107,21 @@ def connect_to_drive():
     service = build('drive', 'v3', credentials=creds)
     return service
 
-# --- Drive 操作関数 ---
-def upload_file_to_drive(file_obj, filename):
+# --- Drive 操作関数 (共有フォルダ対応版) ---
+def list_drive_files(folder_id):
     service = connect_to_drive()
-    file_metadata = {'name': filename, 'mimeType': 'video/mp4'}
-    media = MediaIoBaseUpload(file_obj, mimetype='video/mp4', resumable=True)
-    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    return file.get('id')
-
-def list_drive_files():
-    service = connect_to_drive()
-    # ビデオファイルのみ検索
-    results = service.files().list(
-        q="mimeType contains 'video' and trashed=false",
-        pageSize=20, fields="nextPageToken, files(id, name, createdTime)").execute()
-    items = results.get('files', [])
-    return items
+    # 特定のフォルダの中にあるビデオファイルのみ検索
+    query = f"'{folder_id}' in parents and mimeType contains 'video' and trashed=false"
+    
+    try:
+        results = service.files().list(
+            q=query,
+            pageSize=20, fields="nextPageToken, files(id, name, createdTime)").execute()
+        items = results.get('files', [])
+        return items
+    except Exception as e:
+        st.error(f"フォルダアクセスエラー: 共有設定かIDを確認してください。 {e}")
+        return []
 
 def download_file_from_drive(file_id):
     service = connect_to_drive()
@@ -263,9 +266,8 @@ def get_current_positions(service_order, rotation):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v35")
-    # メニュー追加
-    app_mode = st.radio("メニュー", ["☁️ 動画保管庫 (Drive)", "📊 試合入力", "📈 トス配給分析", "🎥 AI動作分析 (自動判定)", "📝 履歴編集", "👤 チーム管理"])
+    st.title("🏐 Analyst Pro v36")
+    app_mode = st.radio("メニュー", ["🎥 AI動作分析 (Drive)", "📊 試合入力", "📈 トス配給分析", "📝 履歴編集", "👤 チーム管理"])
     st.markdown("---")
     
     team_list = list(st.session_state.players_db.keys())
@@ -294,46 +296,8 @@ with st.sidebar:
 #  UI メイン
 # ==========================================
 
-# --- モード: ☁️ 動画保管庫 (Drive) ---
-if app_mode == "☁️ 動画保管庫 (Drive)":
-    st.header("☁️ 動画保管庫 (Google Drive)")
-    st.info("スマホで撮影した動画をここにアップロードしておくと、PCの「AI動作分析」画面からすぐに呼び出せます。")
-    
-    # アップロード部分
-    st.subheader("📤 動画アップロード")
-    uploaded_file = st.file_uploader("動画を選択 (mp4, mov)", type=['mp4', 'mov'])
-    
-    if uploaded_file:
-        if st.button("クラウドへ保存開始", type="primary"):
-            with st.spinner("Google Driveへアップロード中... (時間がかかります)"):
-                try:
-                    # FileLikeObjectをそのまま渡す
-                    file_id = upload_file_to_drive(uploaded_file, uploaded_file.name)
-                    st.success(f"保存完了！ (ID: {file_id})")
-                    st.balloons()
-                except Exception as e:
-                    st.error(f"アップロード失敗: {e}")
-
-    st.markdown("---")
-    
-    # ファイル一覧表示
-    st.subheader("📂 保存済み動画リスト")
-    if st.button("リスト更新"):
-        pass # 再描画トリガー
-        
-    try:
-        files = list_drive_files()
-        if files:
-            df_files = pd.DataFrame(files)
-            st.dataframe(df_files, hide_index=True, use_container_width=True)
-        else:
-            st.warning("保存された動画はありません。")
-    except Exception as e:
-        st.error(f"リスト取得エラー: {e}")
-
-
 # --- モード1：チーム管理 ---
-elif app_mode == "👤 チーム管理":
+if app_mode == "👤 チーム管理":
     st.header("👤 チーム・選手管理")
     c1, c2 = st.columns([1, 2])
     with c1:
@@ -376,7 +340,7 @@ elif app_mode == "👤 チーム管理":
 
 # --- モード2：データ分析 ---
 elif app_mode == "📈 トス配給分析":
-    st.header("📈 セッター配給分析")
+    st.header("📈 セッター配給分析 (Setter Distribution)")
     df_session = pd.DataFrame(st.session_state.match_data)
     df_history = load_match_history()
     df_all = pd.concat([df_history, df_session], ignore_index=True)
@@ -460,45 +424,45 @@ elif app_mode == "📈 トス配給分析":
                 st.error(f"画像描画エラー: {e}")
 
 # --- モード3：AI動作分析 (Drive連携) ---
-elif app_mode == "🎥 AI動作分析 (自動判定)":
+elif app_mode == "🎥 AI動作分析 (Drive)":
     st.header("🎥 AIによる自動動作判定 (Back View)")
+    st.info("⚠️ 注意: 事前にGoogleドライブで共有フォルダを作成し、コード内の `TARGET_FOLDER_ID` にIDを設定してください。")
     
     with st.expander("🛠 エンドラインの設定 (判定基準)", expanded=True):
         end_line_percent_y = st.slider("エンドライン位置 (上端=0, 下端=100)", 0, 100, 80)
         st.caption(f"上から {end_line_percent_y}% の位置より下側を「サーブエリア」とみなします。")
 
-    # データソース選択
-    source_type = st.radio("動画ソース", ["📤 PCからアップロード", "📂 クラウド(Drive)から選択"], horizontal=True)
-    
     tfile = None
     
-    if source_type == "📤 PCからアップロード":
-        video_file = st.file_uploader("動画ファイルを選択 (mp4, mov)", type=['mp4', 'mov'])
-        if video_file:
-            tfile = tempfile.NamedTemporaryFile(delete=False)
-            tfile.write(video_file.read())
+    # フォルダIDが設定されているかチェック
+    if TARGET_FOLDER_ID == 1F1hTSQcYV3QRpz0PBrx5m4U-9TxE:
+        st.error("【設定未完了】コード内の `TARGET_FOLDER_ID` に、Googleドライブの共有フォルダIDを貼り付けてください。")
+    else:
+        st.subheader("📂 クラウド動画リスト (Google Drive)")
+        if st.button("リスト更新"):
+            pass 
             
-    elif source_type == "📂 クラウド(Drive)から選択":
         try:
-            files = list_drive_files()
+            files = list_drive_files(TARGET_FOLDER_ID)
             if files:
                 file_options = {f['name']: f['id'] for f in files}
                 selected_filename = st.selectbox("解析する動画を選択", list(file_options.keys()))
+                
                 if selected_filename:
-                    # ダウンロードして一時ファイル化
-                    if st.button("クラウドからロードする"):
+                    if st.button("動画をロードして解析準備"):
                         with st.spinner("クラウドからダウンロード中..."):
                             file_id = file_options[selected_filename]
                             fh = download_file_from_drive(file_id)
                             tfile = tempfile.NamedTemporaryFile(delete=False)
                             tfile.write(fh.read())
-                            st.success("ロード完了！解析を開始できます。")
+                            st.success(f"「{selected_filename}」をロードしました！解析ボタンを押してください。")
             else:
-                st.warning("クラウドに動画がありません。「☁️ 動画保管庫」からアップロードしてください。")
+                st.warning(f"指定されたフォルダ (ID: {TARGET_FOLDER_ID}) に動画が見つかりません。")
+                st.write("Googleドライブアプリで、このフォルダに動画をアップロードしてください。")
         except Exception as e:
             st.error(f"Driveエラー: {e}")
 
-    # 解析実行部分 (共通)
+    # 解析実行部分 (ロード済みの場合のみ表示)
     if tfile:
         if st.button("🚀 解析・自動判定開始", type="primary"):
             st.text("モデルをロード中...")
