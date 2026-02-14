@@ -19,9 +19,9 @@ import numpy as np
 import math
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v37")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v37.1")
 
-# ★★★ 修正済み: 新しいフォルダIDを設定しました ★★★
+# ★★★ 設定済み: あなたのGoogleドライブ共有フォルダID ★★★
 TARGET_FOLDER_ID = "1F1hTSQcYV3QRpz0PBrx5m4U-9TxE_bgE"
 
 # ゾーンと色の定義
@@ -117,17 +117,9 @@ def list_drive_files(folder_id):
         items = results.get('files', [])
         return items
     except Exception as e:
-        # 404エラーの場合は分かりやすいメッセージを返す
         if "404" in str(e) or "File not found" in str(e):
             st.error("🚨 エラー: 指定されたフォルダが見つかりません。")
-            st.warning("""
-            【原因】
-            1. フォルダIDが間違っている。
-            2. **Googleドライブの共有設定で、サービスアカウントのメールアドレスが招待されていない。**
-            
-            【対策】
-            サイドバーの下にあるメールアドレスをコピーし、Googleドライブのフォルダ共有設定で「編集者」として追加してください。
-            """)
+            st.warning("サイドバーのメールアドレスをGoogleドライブで招待してください。")
         else:
             st.error(f"Driveアクセスエラー: {e}")
         return []
@@ -232,6 +224,9 @@ if 'op_libero' not in st.session_state: st.session_state.op_libero = "なし"
 if 'game_state' not in st.session_state: st.session_state.game_state = {"my_score": 0, "op_score": 0, "serve_rights": "My Team", "my_rot": 1, "op_rot": 1}
 if 'temp_coords' not in st.session_state: st.session_state.temp_coords = None
 
+# ★動画パス保存用のセッションステート
+if 'analysis_video_path' not in st.session_state: st.session_state.analysis_video_path = None
+
 def rotate_team(team_side):
     current = st.session_state.game_state[f"{team_side}_rot"]
     next_rot = current + 1 if current < 6 else 1
@@ -275,11 +270,10 @@ def get_current_positions(service_order, rotation):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v37")
+    st.title("🏐 Analyst Pro v37.1")
     app_mode = st.radio("メニュー", ["🎥 AI動作分析 (Drive)", "📊 試合入力", "📈 トス配給分析", "📝 履歴編集", "👤 チーム管理"])
     st.markdown("---")
     
-    # ★サービスアカウントのメールアドレスを表示 (招待用)
     try:
         creds_info = dict(st.secrets["gcp_service_account"])
         sa_email = creds_info.get("client_email", "不明")
@@ -443,7 +437,7 @@ elif app_mode == "📈 トス配給分析":
             except Exception as e:
                 st.error(f"画像描画エラー: {e}")
 
-# --- モード3：AI動作分析 (Drive連携) ---
+# --- モード3：AI動作分析 (Drive連携・修正版) ---
 elif app_mode == "🎥 AI動作分析 (Drive)":
     st.header("🎥 AIによる自動動作判定 (Back View)")
     
@@ -451,42 +445,57 @@ elif app_mode == "🎥 AI動作分析 (Drive)":
         end_line_percent_y = st.slider("エンドライン位置 (上端=0, 下端=100)", 0, 100, 80)
         st.caption(f"上から {end_line_percent_y}% の位置より下側を「サーブエリア」とみなします。")
 
-    tfile = None
+    # ソース選択
+    source_type = st.radio("動画ソース", ["📤 PCからアップロード", "📂 クラウド(Drive)から選択"], horizontal=True)
     
-    if len(TARGET_FOLDER_ID) < 10:
-        st.error("【設定未完了】コード内の `TARGET_FOLDER_ID` に、Googleドライブの共有フォルダIDを入力してください。")
-    else:
-        st.subheader("📂 クラウド動画リスト (Google Drive)")
-        if st.button("リスト更新"):
-            pass 
-            
-        try:
-            files = list_drive_files(TARGET_FOLDER_ID)
-            if files:
-                file_options = {f['name']: f['id'] for f in files}
-                selected_filename = st.selectbox("解析する動画を選択", list(file_options.keys()))
-                
-                if selected_filename:
-                    if st.button("動画をロードして解析準備"):
-                        with st.spinner("クラウドからダウンロード中..."):
-                            file_id = file_options[selected_filename]
-                            fh = download_file_from_drive(file_id)
-                            tfile = tempfile.NamedTemporaryFile(delete=False)
-                            tfile.write(fh.read())
-                            st.success(f"「{selected_filename}」をロードしました！解析ボタンを押してください。")
-            else:
-                st.warning(f"フォルダ (ID: {TARGET_FOLDER_ID}) に動画が見つかりません。")
-                st.info("スマホのGoogleドライブアプリで、共有フォルダに動画をアップロードしてください。")
-        except Exception as e:
-            st.error(f"Driveエラー: {e}")
+    # 1. PCアップロード
+    if source_type == "📤 PCからアップロード":
+        video_file = st.file_uploader("動画ファイルを選択 (mp4, mov)", type=['mp4', 'mov'])
+        if video_file:
+            tfile = tempfile.NamedTemporaryFile(delete=False)
+            tfile.write(video_file.read())
+            st.session_state.analysis_video_path = tfile.name # パスを保存
+            st.success("アップロード完了")
 
-    # 解析実行部分 (ロード済みの場合のみ表示)
-    if tfile:
+    # 2. Driveロード
+    elif source_type == "📂 クラウド(Drive)から選択":
+        if len(TARGET_FOLDER_ID) < 10:
+            st.error("【設定未完了】コード内の `TARGET_FOLDER_ID` に、Googleドライブの共有フォルダIDを入力してください。")
+        else:
+            if st.button("フォルダ内のリストを更新"):
+                pass 
+            
+            try:
+                files = list_drive_files(TARGET_FOLDER_ID)
+                if files:
+                    file_options = {f['name']: f['id'] for f in files}
+                    selected_filename = st.selectbox("解析する動画を選択", list(file_options.keys()))
+                    
+                    if selected_filename:
+                        if st.button("動画をロードして解析準備"):
+                            with st.spinner("クラウドからダウンロード中..."):
+                                file_id = file_options[selected_filename]
+                                fh = download_file_from_drive(file_id)
+                                tfile = tempfile.NamedTemporaryFile(delete=False)
+                                tfile.write(fh.read())
+                                st.session_state.analysis_video_path = tfile.name # パスを保存
+                                st.success(f"「{selected_filename}」をロードしました！解析ボタンを押してください。")
+                else:
+                    st.warning("フォルダに動画が見つかりません。")
+            except Exception as e:
+                st.error(f"Driveエラー: {e}")
+
+    # 解析実行部分 (パスがある場合のみ表示)
+    if st.session_state.analysis_video_path:
+        st.write("---")
+        st.video(st.session_state.analysis_video_path) # 動画プレビュー
+        
         if st.button("🚀 解析・自動判定開始", type="primary"):
             st.text("モデルをロード中... (これには数分かかる場合があります)")
             try:
                 pose_model, det_model = load_models()
-                cap = cv2.VideoCapture(tfile.name)
+                # セッションステートからパスを取得
+                cap = cv2.VideoCapture(st.session_state.analysis_video_path)
                 st_frame = st.empty()
                 
                 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -508,7 +517,6 @@ elif app_mode == "🎥 AI動作分析 (Drive)":
                     if cooldown > 0: cooldown -= 1
                     if frame_count % skip_frames != 0: continue
                     
-                    # ボール検出
                     ball_results = det_model(frame, classes=[32], conf=0.3, verbose=False)
                     ball_box = None
                     if len(ball_results[0].boxes) > 0:
@@ -518,7 +526,6 @@ elif app_mode == "🎥 AI動作分析 (Drive)":
                         ball_box = (ball_cx, ball_cy)
                         cv2.circle(frame, (int(ball_cx), int(ball_cy)), 10, (0, 255, 255), -1)
 
-                    # 骨格検知
                     pose_results = pose_model(frame, conf=0.5, verbose=False)
                     annotated_frame = pose_results[0].plot()
                     action_text = ""
