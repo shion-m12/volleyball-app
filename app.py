@@ -9,20 +9,22 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v42 (Manual)")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v42.1")
 
-# ゾーンと色の定義
+# ゾーンと色の定義 (ツーアタックを追加)
 ZONE_COLORS = {
     "レフト(L)": ("red", "Left"),
     "センター(C)": ("green", "Center"),
     "ライト(R)": ("blue", "Right"),
+    "ツーアタック": ("gold", "Setter Dump"), # ★追加
     "レフトバック(LB)": ("orange", "Back-Left"),
     "センターバック(CB)": ("purple", "Back-Center"),
     "ライトバック(RB)": ("cyan", "Back-Right"),
     "なし": ("gray", "None")
 }
 PASS_ORDER = ["Aパス", "Bパス", "Cパス", "その他", "相手サーブミス", "失敗 (エース)"]
-ZONE_ORDER = ["レフト(L)", "センター(C)", "ライト(R)", "レフトバック(LB)", "センターバック(CB)", "ライトバック(RB)", "なし"]
+# ★ツーアタックを選択肢に追加
+ZONE_ORDER = ["レフト(L)", "センター(C)", "ライト(R)", "ツーアタック", "レフトバック(LB)", "センターバック(CB)", "ライトバック(RB)", "なし"]
 
 # --- Google API 接続設定 ---
 def get_gcp_creds():
@@ -68,7 +70,6 @@ def load_players_from_sheet():
             db[team][p_key] = pos
         return db
     except gspread.exceptions.WorksheetNotFound:
-        # シートがない場合は作成して初期データを返す
         worksheet = sheet.add_worksheet(title="players", rows="100", cols="5")
         worksheet.append_row(["Team", "PlayerKey", "Position"])
         return {}
@@ -195,8 +196,8 @@ def get_current_positions(service_order, rotation):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v42 (Manual)")
-    app_mode = st.radio("メニュー", ["📊 試合入力", "👤 チーム・選手管理", "📝 履歴データ確認"])
+    st.title("🏐 Analyst Pro v42.1")
+    app_mode = st.radio("メニュー", ["📊 試合入力", "📈 トス配給分析", "👤 チーム・選手管理", "📝 履歴データ確認"])
     st.markdown("---")
     
     # チーム選択
@@ -396,8 +397,15 @@ elif app_mode == "📊 試合入力":
             setter_val = col_in2.selectbox("セッター (Setter)", active_sorted)
             
             col_in3, col_in4 = st.columns(2)
+            # ★ツーアタックを追加したZoneリスト
             zone_val = col_in3.selectbox("トス配給 (Zone)", ZONE_ORDER)
-            hitter_val = col_in4.selectbox("アタッカー (Hitter)", active_sorted)
+            
+            # ★ツーアタックの場合は、アタッカーを自動的にセッターと同じにする
+            default_hitter_index = 0
+            if zone_val == "ツーアタック" and setter_val in active_sorted:
+                default_hitter_index = active_sorted.index(setter_val)
+            
+            hitter_val = col_in4.selectbox("アタッカー (Hitter)", active_sorted, index=default_hitter_index)
             
             res_val = st.radio("結果 (Result)", ["得点 (Kill)", "継続 (Cont)", "失点 (Err)", "被ブロック (Blk)"], horizontal=True)
 
@@ -483,7 +491,6 @@ elif app_mode == "📊 試合入力":
             # 1つ戻るボタン
             if st.button("↩️ 1つ戻る (Undo)"):
                 st.session_state.match_data.pop()
-                # 点数も戻す処理を入れると完璧だが複雑になるため今回はデータ削除のみ
                 st.warning("直前の記録を削除しました（点数は手動で戻してください）")
                 st.rerun()
                 
@@ -496,7 +503,66 @@ elif app_mode == "📊 試合入力":
             csv = df.to_csv(index=False).encode('utf-8')
             st.download_button("📥 CSVダウンロード", csv, "match_log.csv", "text/csv")
 
-# --- モード3：履歴データ確認 ---
+# --- モード3：分析 ---
+elif app_mode == "📈 トス配給分析":
+    st.header("📈 セッター配給分析")
+    
+    # データ結合 (履歴 + 現在)
+    df_session = pd.DataFrame(st.session_state.match_data)
+    df_history = load_match_history()
+    df_all = pd.concat([df_history, df_session], ignore_index=True)
+    
+    if df_all.empty:
+        st.info("データがありません。")
+    else:
+        # フィルタリング
+        if "X" in df_all.columns:
+            df_all["X"] = pd.to_numeric(df_all["X"], errors='coerce')
+            df_all["Y"] = pd.to_numeric(df_all["Y"], errors='coerce')
+            df_all = df_all.dropna(subset=["X", "Y"])
+            
+            # セッター選択
+            setters = ["全員"] + sorted(list(df_all["Setter"].unique()))
+            sel_setter = st.selectbox("分析対象セッター", setters)
+            
+            if sel_setter != "全員":
+                df_filtered = df_all[df_all["Setter"] == sel_setter]
+            else:
+                df_filtered = df_all
+                
+            # 集計表
+            st.subheader("📊 ゾーン別 配給・決定率")
+            if not df_filtered.empty:
+                # クロス集計: Pass vs Zone
+                pivot = pd.crosstab(df_filtered["Pass"], df_filtered["Zone"], margins=True)
+                st.dataframe(pivot, use_container_width=True)
+                
+                # 決定率計算 (Zoneごと)
+                stats = df_filtered.groupby("Zone").agg(
+                    Attempts=("Result", "count"),
+                    Kills=("Result", lambda x: (x=="得点 (Kill)").sum())
+                )
+                stats["Kill Rate"] = (stats["Kills"] / stats["Attempts"] * 100).round(1)
+                st.dataframe(stats.style.format({"Kill Rate": "{:.1f}%"}))
+
+            # 散布図
+            st.subheader("🎯 セットアップ位置")
+            import matplotlib.pyplot as plt
+            pil_img = get_court_image()
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.imshow(pil_img, extent=[0, 500, 500, 0])
+            
+            for zone in ZONE_ORDER:
+                if zone in df_filtered["Zone"].unique():
+                    subset = df_filtered[df_filtered["Zone"] == zone]
+                    color_info = ZONE_COLORS.get(zone, ("gray", zone))
+                    ax.scatter(subset["X"], subset["Y"], label=zone, color=color_info[0], s=120, alpha=0.7, edgecolors='white')
+            
+            ax.legend(loc='upper right')
+            ax.axis('off')
+            st.pyplot(fig)
+
+# --- モード4：履歴データ確認 ---
 elif app_mode == "📝 履歴データ確認":
     st.header("📝 保存済みデータの確認")
     df_history = load_match_history()
