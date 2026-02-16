@@ -5,13 +5,14 @@ from PIL import Image, ImageDraw
 import datetime
 import re
 import os
+import copy
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v48")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v50")
 
 # 定数
 ZONE_COLORS = {
@@ -22,6 +23,7 @@ ZONE_COLORS = {
 PASS_ORDER = ["Aパス", "Bパス", "Cパス", "その他", "相手サーブミス", "失敗 (エース)"]
 ZONE_ORDER = ["レフト(L)", "センター(C)", "ライト(R)", "ツーアタック", "レフトバック(LB)", "センターバック(CB)", "ライトバック(RB)", "なし"]
 BLOCK_OPTIONS = ["0", "1", "1.5", "2", "2.5", "3"]
+RESULT_OPTIONS = ["継続 (Cont)", "得点 (Kill)", "失点 (Err)", "被ブロック (Blk)"]
 
 # --- Google API ---
 def get_gcp_creds():
@@ -97,7 +99,7 @@ def plot_court_background(ax):
     ax.plot([0, 500], [330, 330], color='white', linewidth=2)
     ax.axis('off')
 
-# --- ステート ---
+# --- ステート管理 ---
 if 'players_db' not in st.session_state: st.session_state.players_db = load_players()
 if 'match_data' not in st.session_state: st.session_state.match_data = []
 if 'my_order' not in st.session_state: st.session_state.my_order = []
@@ -106,8 +108,31 @@ if 'game_state' not in st.session_state: st.session_state.game_state = {"my_scor
 if 'temp_coords' not in st.session_state: st.session_state.temp_coords = None
 if 'my_libero' not in st.session_state: st.session_state.my_libero = "なし"
 if 'op_libero' not in st.session_state: st.session_state.op_libero = "なし"
-# ★追加: 試合名を保持する変数
 if 'current_match_name' not in st.session_state: st.session_state.current_match_name = ""
+if 'undo_stack' not in st.session_state: st.session_state.undo_stack = []
+
+# --- Undo/Backup ロジック ---
+def save_state_for_undo():
+    snapshot = {
+        "game_state": copy.deepcopy(st.session_state.game_state),
+        "match_data": copy.deepcopy(st.session_state.match_data),
+        "my_order": list(st.session_state.my_order),
+        "op_order": list(st.session_state.op_order)
+    }
+    st.session_state.undo_stack.append(snapshot)
+    if len(st.session_state.undo_stack) > 50:
+        st.session_state.undo_stack.pop(0)
+
+def perform_undo():
+    if st.session_state.undo_stack:
+        snapshot = st.session_state.undo_stack.pop()
+        st.session_state.game_state = snapshot["game_state"]
+        st.session_state.match_data = snapshot["match_data"]
+        st.session_state.my_order = snapshot["my_order"]
+        st.session_state.op_order = snapshot["op_order"]
+        st.toast("↩️ Undo実行")
+    else:
+        st.warning("これ以上戻れません")
 
 # --- ルール ---
 def rotate(team):
@@ -139,7 +164,7 @@ def get_pos(order, rot):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v48")
+    st.title("🏐 Analyst Pro v50")
     app_mode = st.radio("Menu", ["📊 試合入力", "🎓 研究用分析", "📈 配給チャート", "👤 チーム管理", "📝 履歴データ"])
     st.markdown("---")
     
@@ -162,9 +187,9 @@ with st.sidebar:
                 st.toast("保存完了！")
             st.session_state.game_state = {"my_score": 0, "op_score": 0, "serve_rights": "My Team", "my_rot": 1, "op_rot": 1}
             st.session_state.match_data = []
+            st.session_state.undo_stack = []
             st.session_state.my_order = []
             st.session_state.op_order = []
-            st.session_state.current_match_name = ""
             st.rerun()
 
 # ==========================================
@@ -174,12 +199,9 @@ with st.sidebar:
 # --- 1. 試合入力 ---
 if app_mode == "📊 試合入力":
     
-    # A. スタメン登録
     if not st.session_state.my_order:
         st.header("🏁 スターティングメンバー登録")
-        
-        # ★試合名の入力欄を追加
-        match_name_input = st.text_input("📝 試合名 (例: 県大会 決勝 vs 〇〇高校)", value=f"{datetime.date.today()} {op_tm}戦")
+        match_name_input = st.text_input("📝 試合名", value=f"{datetime.date.today()} {op_tm}戦")
         
         mp = sort_players(list(st.session_state.players_db[my_tm].keys())) if my_tm in st.session_state.players_db else []
         op = sort_players(list(st.session_state.players_db[op_tm].keys())) if op_tm in st.session_state.players_db else []
@@ -222,7 +244,7 @@ if app_mode == "📊 試合入力":
         first = c3.radio("First Serve", [my_tm, op_tm], horizontal=True)
         
         if c4.button("試合開始 🚀", type="primary"):
-            st.session_state.current_match_name = match_name_input # ★試合名を保存
+            st.session_state.current_match_name = match_name_input
             st.session_state.my_order = [m1, m2, m3, m4, m5, m6]
             st.session_state.op_order = [o1, o2, o3, o4, o5, o6] if op else ["Op1","Op2","Op3","Op4","Op5","Op6"]
             st.session_state.my_libero = ml
@@ -294,53 +316,74 @@ if app_mode == "📊 試合入力":
             active_sorted = ["なし"] + sort_players(active)
             
             c1, c2 = st.columns(2)
-            pas = c1.selectbox("1. Reception", PASS_ORDER)
-            sett = c2.selectbox("2. Setter", active_sorted)
+            pas = c1.selectbox("1. Reception", PASS_ORDER, key="in_pass")
+            sett = c2.selectbox("2. Setter", active_sorted, key="in_setter")
             
             c3, c4 = st.columns(2)
-            zone = c3.selectbox("3. Zone", ZONE_ORDER)
+            zone = c3.selectbox("3. Zone", ZONE_ORDER, key="in_zone")
             def_h = active_sorted.index(sett) if zone=="ツーアタック" and sett in active_sorted else 0
-            hit = c4.selectbox("4. Hitter", active_sorted, index=def_h)
+            hit = c4.selectbox("4. Hitter", active_sorted, index=def_h, key="in_hitter")
             
-            blk = st.select_slider("5. Opponent Block", BLOCK_OPTIONS, value="2")
+            blk = st.select_slider("5. Opponent Block", BLOCK_OPTIONS, value="2", key="in_block")
             
             st.caption("6. Toss Origin")
             coords = streamlit_image_coordinates(get_input_court_img(), width=400, key="click")
             if coords: st.session_state.temp_coords = coords
             if st.session_state.temp_coords: st.success("📍 座標OK")
             
-            st.write("7. Result")
-            c_r1, c_r2, c_r3 = st.columns(3)
-            res = None
-            if c_r1.button("🔥 決定 (Kill)", type="primary", use_container_width=True): res = "得点 (Kill)"
-            if c_r2.button("🔄 継続", use_container_width=True): res = "継続"
-            if c_r3.button("💀 失点/被ブロ", use_container_width=True): res = "失点"
-
-            if res:
-                if not st.session_state.temp_coords:
+            st.write("7. Result & Record")
+            c_res, c_rec = st.columns([2, 1])
+            res_sel = c_res.radio("Result", RESULT_OPTIONS, horizontal=True, key="in_res")
+            
+            if c_rec.button("📝 記録する", type="primary", use_container_width=True):
+                is_srv_miss = (pas == "相手サーブミス")
+                if not st.session_state.temp_coords and not is_srv_miss:
                     st.error("コート位置を指定してください")
                 else:
+                    save_state_for_undo()
+                    final_x = st.session_state.temp_coords["x"] if st.session_state.temp_coords else 0
+                    final_y = st.session_state.temp_coords["y"] if st.session_state.temp_coords else 0
+                    
+                    final_res = res_sel
+                    if is_srv_miss: final_res = "相手ミス (得点)"
+                    elif pas == "失敗 (エース)": final_res = "被エース (失点)"
+
                     rec = {
-                        "Match": st.session_state.current_match_name, # ★保存
+                        "Match": st.session_state.current_match_name,
                         "Time": datetime.datetime.now().strftime("%H:%M:%S"),
                         "MyScore": gs['my_score'], "OpScore": gs['op_score'], "Rot": gs['my_rot'],
-                        "Pass": pas, "Setter": sett, "Zone": zone, "Hitter": hit, "Block": blk, "Result": res,
-                        "X": st.session_state.temp_coords["x"], "Y": st.session_state.temp_coords["y"]
+                        "Pass": pas, "Setter": sett, "Zone": zone, "Hitter": hit, "Block": blk, "Result": final_res,
+                        "X": final_x, "Y": final_y
                     }
                     st.session_state.match_data.append(rec)
-                    if res == "得点 (Kill)": add_score("my"); st.toast("Nice Kill!")
-                    elif res == "失点": add_score("op"); st.toast("Don't mind...")
-                    elif pas == "失敗 (エース)": add_score("op"); st.toast("Ace...")
+                    
+                    if "得点" in final_res or "相手ミス" in final_res or "得点 (Kill)" in final_res:
+                        add_score("my")
+                        st.toast("Nice Point! (+1)")
+                    elif "失点" in final_res or "被ブロック" in final_res or "失敗 (エース)" in final_res:
+                        add_score("op")
+                        st.toast("Don't mind... (Op +1)")
+                    
                     st.session_state.temp_coords = None
                     st.rerun()
 
         with c_ctrl:
             with st.expander("⚙️ 修正・交代", expanded=True):
-                if st.button("自ローテ回す"): rotate("my"); st.rerun()
-                if st.button("敵ローテ回す"): rotate("op"); st.rerun()
-                c_a1, c_a2 = st.columns(2)
-                if c_a1.button("自 +1"): add_score("my"); st.rerun()
-                if c_a2.button("敵 +1"): add_score("op"); st.rerun()
+                if st.button("↩️ Undo (1手戻す)", type="secondary", use_container_width=True):
+                    perform_undo()
+                    st.rerun()
+                
+                st.write("**得点修正**")
+                c_sc1, c_sc2, c_sc3, c_sc4 = st.columns(4)
+                if c_sc1.button("自 +1"): save_state_for_undo(); add_score("my"); st.rerun()
+                if c_sc2.button("自 -1"): save_state_for_undo(); gs["my_score"]-=1; st.rerun()
+                if c_sc3.button("敵 +1"): save_state_for_undo(); add_score("op"); st.rerun()
+                if c_sc4.button("敵 -1"): save_state_for_undo(); gs["op_score"]-=1; st.rerun()
+                
+                st.write("**ローテ修正**")
+                c_rt1, c_rt2 = st.columns(2)
+                if c_rt1.button("自 回す"): save_state_for_undo(); rotate("my"); st.rerun()
+                if c_rt2.button("敵 回す"): save_state_for_undo(); rotate("op"); st.rerun()
                 
                 t_sub1, t_sub2 = st.tabs(["自交代", "敵交代"])
                 with t_sub1:
@@ -348,17 +391,17 @@ if app_mode == "📊 試合入力":
                     idx_map = {"BR":0, "FR":1, "FC":2, "FL":3, "BL":4, "BC":5}
                     bench = [p for p in sort_players(list(st.session_state.players_db[my_tm].keys())) if p not in st.session_state.my_order]
                     sub = st.selectbox("In(自)", bench, key="smi") if bench else None
-                    if st.button("実行(自)"): st.session_state.my_order[idx_map[pos_idx]] = sub; st.rerun()
+                    if st.button("実行(自)"): save_state_for_undo(); st.session_state.my_order[idx_map[pos_idx]] = sub; st.rerun()
                 with t_sub2:
                     if st.session_state.op_order:
                         pos_idx_o = st.selectbox("Out(敵)", ["FL","FC","FR","BL","BC","BR"], key="so")
                         bench_o = [p for p in sort_players(list(st.session_state.players_db[op_tm].keys())) if p not in st.session_state.op_order]
                         sub_o = st.selectbox("In(敵)", bench_o, key="soi") if bench_o else None
-                        if st.button("実行(敵)"): st.session_state.op_order[idx_map[pos_idx_o]] = sub_o; st.rerun()
+                        if st.button("実行(敵)"): save_state_for_undo(); st.session_state.op_order[idx_map[pos_idx_o]] = sub_o; st.rerun()
             
+            st.write("履歴")
             if st.session_state.match_data:
-                if st.button("Undo"): st.session_state.match_data.pop(); st.rerun()
-                st.dataframe(pd.DataFrame(st.session_state.match_data)[["Pass","Zone","Result"]].iloc[::-1], height=200, hide_index=True)
+                st.dataframe(pd.DataFrame(st.session_state.match_data)[["Pass","Result"]].iloc[::-1], height=150, hide_index=True)
 
 # --- 2. 研究用分析 ---
 elif app_mode == "🎓 研究用分析":
@@ -368,6 +411,10 @@ elif app_mode == "🎓 研究用分析":
     df = pd.concat([df_h, df_s], ignore_index=True)
     
     if not df.empty:
+        # ★ KeyError対策 (古いデータ用)
+        for col in ["Block", "Rot", "Pass", "Zone", "Setter", "Team"]:
+            if col not in df.columns: df[col] = 0 if col in ["Block","Rot"] else "Unknown"
+            
         df["Block"] = pd.to_numeric(df["Block"], errors='coerce')
         df["Rot"] = pd.to_numeric(df["Rot"], errors='coerce')
         if "Team" not in df.columns: df["Team"] = my_tm
