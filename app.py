@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v47")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v48")
 
 # 定数
 ZONE_COLORS = {
@@ -106,6 +106,8 @@ if 'game_state' not in st.session_state: st.session_state.game_state = {"my_scor
 if 'temp_coords' not in st.session_state: st.session_state.temp_coords = None
 if 'my_libero' not in st.session_state: st.session_state.my_libero = "なし"
 if 'op_libero' not in st.session_state: st.session_state.op_libero = "なし"
+# ★追加: 試合名を保持する変数
+if 'current_match_name' not in st.session_state: st.session_state.current_match_name = ""
 
 # --- ルール ---
 def rotate(team):
@@ -128,8 +130,6 @@ def add_score(side):
 def get_pos(order, rot):
     if len(order)<6: return {}
     idx = rot - 1
-    # P4(FL), P3(FC), P2(FR), P5(BL), P6(BC), P1(BR) の順に誰がいるか返す
-    # ※配列の並び順とローテーションの関係
     return {
         "FL": order[(3+idx)%6], "FC": order[(2+idx)%6], "FR": order[(1+idx)%6],
         "BL": order[(4+idx)%6], "BC": order[(5+idx)%6], "BR": order[(0+idx)%6]
@@ -139,7 +139,7 @@ def get_pos(order, rot):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v47")
+    st.title("🏐 Analyst Pro v48")
     app_mode = st.radio("Menu", ["📊 試合入力", "🎓 研究用分析", "📈 配給チャート", "👤 チーム管理", "📝 履歴データ"])
     st.markdown("---")
     
@@ -164,6 +164,7 @@ with st.sidebar:
             st.session_state.match_data = []
             st.session_state.my_order = []
             st.session_state.op_order = []
+            st.session_state.current_match_name = ""
             st.rerun()
 
 # ==========================================
@@ -176,12 +177,15 @@ if app_mode == "📊 試合入力":
     # A. スタメン登録
     if not st.session_state.my_order:
         st.header("🏁 スターティングメンバー登録")
+        
+        # ★試合名の入力欄を追加
+        match_name_input = st.text_input("📝 試合名 (例: 県大会 決勝 vs 〇〇高校)", value=f"{datetime.date.today()} {op_tm}戦")
+        
         mp = sort_players(list(st.session_state.players_db[my_tm].keys())) if my_tm in st.session_state.players_db else []
         op = sort_players(list(st.session_state.players_db[op_tm].keys())) if op_tm in st.session_state.players_db else []
         
         if not mp: st.warning(f"「{my_tm}」の選手未登録"); st.stop()
         
-        # 視覚的配置 (左:自, 右:敵)
         c_my_b, c_my_f, c_net, c_op_f, c_op_b = st.columns([1.5, 1.5, 0.2, 1.5, 1.5])
         with c_net: st.markdown("<div style='height:300px; border-left:4px double #333; margin-left:50%;'></div>", unsafe_allow_html=True)
 
@@ -218,6 +222,7 @@ if app_mode == "📊 試合入力":
         first = c3.radio("First Serve", [my_tm, op_tm], horizontal=True)
         
         if c4.button("試合開始 🚀", type="primary"):
+            st.session_state.current_match_name = match_name_input # ★試合名を保存
             st.session_state.my_order = [m1, m2, m3, m4, m5, m6]
             st.session_state.op_order = [o1, o2, o3, o4, o5, o6] if op else ["Op1","Op2","Op3","Op4","Op5","Op6"]
             st.session_state.my_libero = ml
@@ -234,9 +239,9 @@ if app_mode == "📊 試合入力":
         s_my = "🏐 SERVER" if gs['serve_rights']=="My Team" else ""
         s_op = "SERVER 🏐" if gs['serve_rights']=="Opponent" else ""
         
-        # スコア
         st.markdown(f"""
         <div style="background:#262730; color:white; padding:10px; border-radius:10px; text-align:center; margin-bottom:10px;">
+            <div style="font-size:1.0em; color:#ddd;">{st.session_state.current_match_name}</div>
             <div style="font-size:2.5em; font-weight:bold;">
                 <span style="color:#4da6ff">{gs['my_score']}</span> - <span style="color:#ff4b4b">{gs['op_score']}</span>
             </div>
@@ -247,7 +252,6 @@ if app_mode == "📊 試合入力":
         </div>
         """, unsafe_allow_html=True)
 
-        # ★ビジュアルコート図 (配置修正版: レフト・センター・ライトの順)
         st.markdown(f"""
         <style>
             .c-container {{ display: grid; grid-template-columns: 1fr 1fr 0.1fr 1fr 1fr; gap:4px; margin-bottom:10px; text-align:center; font-size:0.8em; }}
@@ -282,7 +286,6 @@ if app_mode == "📊 試合入力":
         </div>
         """, unsafe_allow_html=True)
 
-        # 入力
         c_in, c_ctrl = st.columns([1.8, 1])
         with c_in:
             st.subheader("🏐 プレー入力")
@@ -318,6 +321,7 @@ if app_mode == "📊 試合入力":
                     st.error("コート位置を指定してください")
                 else:
                     rec = {
+                        "Match": st.session_state.current_match_name, # ★保存
                         "Time": datetime.datetime.now().strftime("%H:%M:%S"),
                         "MyScore": gs['my_score'], "OpScore": gs['op_score'], "Rot": gs['my_rot'],
                         "Pass": pas, "Setter": sett, "Zone": zone, "Hitter": hit, "Block": blk, "Result": res,
