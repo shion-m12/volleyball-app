@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 # --- 設定 ---
-st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v45")
+st.set_page_config(layout="wide", page_title="Volleyball Analyst Pro v46")
 
 # 定数・設定
 ZONE_COLORS = {
@@ -88,16 +88,14 @@ def get_input_court_img():
     img.save("court.png")
     return img
 
-# 散布図用コート描画 (Matplotlib)
+# 散布図用コート描画
 def plot_court_background(ax):
     ax.set_xlim(0, 500); ax.set_ylim(500, 0)
     ax.set_aspect('equal')
-    # コート背景
     rect = patches.Rectangle((0, 0), 500, 500, linewidth=2, edgecolor='black', facecolor='#FFCC99')
     ax.add_patch(rect)
-    # ライン
-    ax.plot([0, 500], [250, 250], color='white', linewidth=3) # センター
-    ax.plot([0, 500], [170, 170], color='white', linewidth=2) # アタックライン
+    ax.plot([0, 500], [250, 250], color='white', linewidth=3)
+    ax.plot([0, 500], [170, 170], color='white', linewidth=2)
     ax.plot([0, 500], [330, 330], color='white', linewidth=2)
     ax.axis('off')
 
@@ -105,6 +103,7 @@ def plot_court_background(ax):
 if 'players_db' not in st.session_state: st.session_state.players_db = load_players()
 if 'match_data' not in st.session_state: st.session_state.match_data = []
 if 'my_order' not in st.session_state: st.session_state.my_order = []
+if 'op_order' not in st.session_state: st.session_state.op_order = [] # ★相手スタメン用
 if 'game_state' not in st.session_state: st.session_state.game_state = {"my_score": 0, "op_score": 0, "serve_rights": "My Team", "my_rot": 1, "op_rot": 1}
 if 'temp_coords' not in st.session_state: st.session_state.temp_coords = None
 if 'my_libero' not in st.session_state: st.session_state.my_libero = "なし"
@@ -139,7 +138,7 @@ def get_pos(order, rot):
 #  UI サイドバー
 # ==========================================
 with st.sidebar:
-    st.title("🏐 Analyst Pro v45")
+    st.title("🏐 Analyst Pro v46")
     app_mode = st.radio("機能メニュー", [
         "📊 試合入力", 
         "🎓 研究用分析", 
@@ -156,7 +155,6 @@ with st.sidebar:
         op_tm = st.selectbox("相手チーム", [t for t in teams if t!=my_tm], index=0) if len(teams)>1 else "Guest"
     else: my_tm="MyTeam"; op_tm="Guest"
 
-    # データ操作
     if app_mode == "📊 試合入力":
         st.markdown("### 💾 データ操作")
         if st.session_state.match_data:
@@ -171,42 +169,75 @@ with st.sidebar:
             st.session_state.game_state = {"my_score": 0, "op_score": 0, "serve_rights": "My Team", "my_rot": 1, "op_rot": 1}
             st.session_state.match_data = []
             st.session_state.my_order = []
+            st.session_state.op_order = []
             st.rerun()
 
 # ==========================================
-#  UI メインコンテンツ
+#  UI メイン
 # ==========================================
 
-# --- 1. 試合入力 (v44仕様) ---
+# --- 1. 試合入力 ---
 if app_mode == "📊 試合入力":
     
-    # A. スタメン登録
+    # A. スタメン登録 (自・敵両方対応)
     if not st.session_state.my_order:
         st.header("🏁 スターティングメンバー登録")
+        
+        # 選手リスト取得
         mp = sort_players(list(st.session_state.players_db[my_tm].keys())) if my_tm in st.session_state.players_db else []
         op = sort_players(list(st.session_state.players_db[op_tm].keys())) if op_tm in st.session_state.players_db else []
         
+        if not mp: st.warning(f"「{my_tm}」の選手が登録されていません。チーム管理で追加してください。"); st.stop()
+        
+        # UI: 左(自) - ネット - 右(敵)
         c_my_b, c_my_f, c_net, c_op_f, c_op_b = st.columns([1.5, 1.5, 0.2, 1.5, 1.5])
-        with c_net: st.markdown("<div style='height:300px; border-left:4px double #333; margin-left:50%;'></div>", unsafe_allow_html=True)
+        
+        with c_net: 
+            st.markdown("<div style='height:300px; border-left:4px double #333; margin-left:50%;'></div>", unsafe_allow_html=True)
 
+        # 自チーム
         with c_my_f:
-            st.caption(f"{my_tm} 前衛")
-            m4 = st.selectbox("前・左 (FL)", mp, index=3 if len(mp)>3 else 0)
-            m3 = st.selectbox("前・中 (FC)", mp, index=2 if len(mp)>2 else 0)
-            m2 = st.selectbox("前・右 (FR)", mp, index=1 if len(mp)>1 else 0)
+            st.caption(f"🔵 {my_tm} 前衛")
+            m4 = st.selectbox("前・左 (FL)", mp, index=3 if len(mp)>3 else 0, key="m4")
+            m3 = st.selectbox("前・中 (FC)", mp, index=2 if len(mp)>2 else 0, key="m3")
+            m2 = st.selectbox("前・右 (FR)", mp, index=1 if len(mp)>1 else 0, key="m2")
         with c_my_b:
             st.caption("後衛")
-            m5 = st.selectbox("後・左 (BL)", mp, index=4 if len(mp)>4 else 0)
-            m6 = st.selectbox("後・中 (BC)", mp, index=5 if len(mp)>5 else 0)
-            m1 = st.selectbox("後・右 (BR/Srv)", mp, index=0)
+            m5 = st.selectbox("後・左 (BL)", mp, index=4 if len(mp)>4 else 0, key="m5")
+            m6 = st.selectbox("後・中 (BC)", mp, index=5 if len(mp)>5 else 0, key="m6")
+            m1 = st.selectbox("後・右 (BR/Srv)", mp, index=0, key="m1")
+
+        # 相手チーム (★ここで登録できるように修正)
+        with c_op_f:
+            st.caption(f"🔴 {op_tm} 前衛")
+            if op:
+                o2 = st.selectbox("前・左 (FL)", op, index=1 if len(op)>1 else 0, key="o2")
+                o3 = st.selectbox("前・中 (FC)", op, index=2 if len(op)>2 else 0, key="o3")
+                o4 = st.selectbox("前・右 (FR)", op, index=3 if len(op)>3 else 0, key="o4")
+            else:
+                st.write("(未登録)"); o2=o3=o4="Op_Front"
+        with c_op_b:
+            st.caption("後衛")
+            if op:
+                o1 = st.selectbox("後・左 (BL)", op, index=0, key="o1")
+                o6 = st.selectbox("後・中 (BC)", op, index=5 if len(op)>5 else 0, key="o6")
+                o5 = st.selectbox("後・右 (BR)", op, index=4 if len(op)>4 else 0, key="o5")
+            else:
+                st.write("(未登録)"); o1=o6=o5="Op_Back"
 
         st.markdown("---")
-        ml = st.selectbox("リベロ (自)", ["なし"]+mp)
-        first = st.radio("First Serve", [my_tm, op_tm], horizontal=True)
+        c_opt1, c_opt2, c_btn = st.columns([1,1,1])
+        ml = c_opt1.selectbox("リベロ (自)", ["なし"]+mp)
+        first = c_opt2.radio("First Serve", [my_tm, op_tm], horizontal=True)
         
-        if st.button("試合開始 🚀", type="primary"):
+        if c_btn.button("試合開始 🚀", type="primary"):
             st.session_state.my_order = [m1, m2, m3, m4, m5, m6]
-            st.session_state.op_order = ["Op1","Op2","Op3","Op4","Op5","Op6"] # 相手は簡易
+            # ★ここで相手スタメンも保存
+            if op:
+                st.session_state.op_order = [o1, o2, o3, o4, o5, o6]
+            else:
+                st.session_state.op_order = ["Op1","Op2","Op3","Op4","Op5","Op6"]
+            
             st.session_state.my_libero = ml
             st.session_state.game_state["serve_rights"] = "My Team" if first == my_tm else "Opponent"
             st.rerun()
@@ -215,6 +246,8 @@ if app_mode == "📊 試合入力":
     else:
         gs = st.session_state.game_state
         my_p = get_pos(st.session_state.my_order, gs['my_rot'])
+        op_p = get_pos(st.session_state.op_order, gs['op_rot']) # ★相手位置計算
+        
         s_my = "🏐 SERVER" if gs['serve_rights']=="My Team" else ""
         s_op = "SERVER 🏐" if gs['serve_rights']=="Opponent" else ""
         
@@ -231,27 +264,34 @@ if app_mode == "📊 試合入力":
         </div>
         """, unsafe_allow_html=True)
 
-        # ビジュアルコート図
+        # ビジュアルコート図 (★相手名表示に対応)
         st.markdown(f"""
         <style>
             .c-container {{ display: grid; grid-template-columns: 1fr 1fr 0.1fr 1fr 1fr; gap:3px; margin-bottom:10px; text-align:center; font-size:0.8em; }}
-            .c-cell {{ padding:5px; border-radius:4px; border:1px solid #555; }}
+            .c-cell {{ padding:5px; border-radius:4px; border:1px solid #555; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }}
             .my-front {{ background: #d1e7dd; color: #0f5132; border: 2px solid #198754; }}
             .my-back {{ background: #f8f9fa; color: #333; }}
+            .op-area {{ background: #f8d7da; color: #842029; opacity: 0.9; }}
             .net {{ background: #fff; width:100%; }}
         </style>
         <div class="c-container">
             <div class="c-cell my-back">BL: {my_p.get('BL','?')}</div>
             <div class="c-cell my-front">FL: {my_p.get('FL','?')}</div>
-            <div class="net"></div><div class="c-cell">Op</div><div class="c-cell">Op</div>
+            <div class="net"></div>
+            <div class="c-cell op-area">FR: {op_p.get('FR','?')}</div>
+            <div class="c-cell op-area">BR: {op_p.get('BR','?')}</div>
 
             <div class="c-cell my-back">BC: {my_p.get('BC','?')}</div>
             <div class="c-cell my-front">FC: {my_p.get('FC','?')}</div>
-            <div class="net"></div><div class="c-cell">Op</div><div class="c-cell">Op</div>
+            <div class="net"></div>
+            <div class="c-cell op-area">FC: {op_p.get('FC','?')}</div>
+            <div class="c-cell op-area">BC: {op_p.get('BC','?')}</div>
 
             <div class="c-cell my-back" style="border:2px solid gold;">BR: {my_p.get('BR','?')}</div>
             <div class="c-cell my-front">FR: {my_p.get('FR','?')}</div>
-            <div class="net"></div><div class="c-cell">Op</div><div class="c-cell">Op</div>
+            <div class="net"></div>
+            <div class="c-cell op-area">FL: {op_p.get('FL','?')}</div>
+            <div class="c-cell op-area">BL: {op_p.get('BL','?')}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -305,7 +345,8 @@ if app_mode == "📊 試合入力":
 
         with c_ctrl:
             with st.expander("⚙️ 修正・交代", expanded=True):
-                if st.button("ローテ回す"): rotate("my"); st.rerun()
+                if st.button("ローテ回す (自)"): rotate("my"); st.rerun()
+                if st.button("ローテ回す (敵)"): rotate("op"); st.rerun()
                 if st.button("点数修正: 自+1"): add_score("my"); st.rerun()
                 if st.button("点数修正: 敵+1"): add_score("op"); st.rerun()
                 
@@ -326,7 +367,6 @@ if app_mode == "📊 試合入力":
 elif app_mode == "🎓 研究用分析":
     st.header("🎓 トス配給傾向の研究分析")
     
-    # データ統合
     df_h = load_match_history()
     df_s = pd.DataFrame(st.session_state.match_data)
     df = pd.concat([df_h, df_s], ignore_index=True)
@@ -334,14 +374,10 @@ elif app_mode == "🎓 研究用分析":
     if df.empty:
         st.info("データがありません")
     else:
-        # 型変換
         df["Block"] = pd.to_numeric(df["Block"], errors='coerce')
         df["Rot"] = pd.to_numeric(df["Rot"], errors='coerce')
+        if "Team" not in df.columns: df["Team"] = my_tm
         
-        # チームフィルタ
-        if "Team" not in df.columns: df["Team"] = my_tm # カラムがない場合の補完
-        
-        # セッター位置の定義
         st.write("##### 条件設定")
         setter_front_rot = st.multiselect("セッター前衛のローテ", [1,2,3,4,5,6], default=[4,5,6])
         df["SetterPos"] = df["Rot"].apply(lambda x: "前衛 (攻撃2枚)" if x in setter_front_rot else "後衛 (攻撃3枚)")
@@ -353,12 +389,10 @@ elif app_mode == "🎓 研究用分析":
             st.markdown("**配給率 (%)**")
             piv = pd.crosstab(data["Pass"], data["Zone"], normalize='index') * 100
             st.dataframe(piv.style.format("{:.1f}%").background_gradient(cmap="Oranges", axis=1))
-            
             st.markdown("**ブロック枚数 & 数的優位率**")
             data["Advantage"] = data["Block"] <= 1.5
             adv = data.groupby("Zone")["Advantage"].mean() * 100
             st.bar_chart(adv)
-            st.caption("※ 縦軸: 相手ブロックが1.5枚以下だった割合(%)")
 
         with t1: analyze_tab(df[df["SetterPos"]=="前衛 (攻撃2枚)"])
         with t2: analyze_tab(df[df["SetterPos"]=="後衛 (攻撃3枚)"])
@@ -367,18 +401,13 @@ elif app_mode == "🎓 研究用分析":
             df_c = df[df["Pass"]=="Cパス"]
             if not df_c.empty:
                 c1, c2 = st.columns(2)
-                with c1:
-                    st.write("配給先")
-                    st.dataframe(df_c["Zone"].value_counts())
-                with c2:
-                    avg_blk = df_c["Block"].mean()
-                    st.metric("平均被ブロック枚数", f"{avg_blk:.2f}枚")
+                with c1: st.dataframe(df_c["Zone"].value_counts())
+                with c2: st.metric("平均被ブロック", f"{df_c['Block'].mean():.2f}")
             else: st.info("データなし")
 
 # --- 3. 配給チャート (v42散布図) ---
 elif app_mode == "📈 配給チャート":
     st.header("📈 トス配給散布図")
-    
     df_h = load_match_history()
     df_s = pd.DataFrame(st.session_state.match_data)
     df = pd.concat([df_h, df_s], ignore_index=True)
@@ -388,22 +417,19 @@ elif app_mode == "📈 配給チャート":
         df["Y"] = pd.to_numeric(df["Y"], errors='coerce')
         df = df.dropna(subset=["X", "Y"])
         
-        sel_setter = st.selectbox("セッター絞り込み", ["全員"] + sorted(list(df["Setter"].unique())))
+        sel_setter = st.selectbox("セッター", ["全員"] + sorted(list(df["Setter"].unique())))
         if sel_setter != "全員": df = df[df["Setter"]==sel_setter]
         
         fig, ax = plt.subplots(figsize=(8, 5))
         plot_court_background(ax)
-        
         for z in ZONE_ORDER:
             d = df[df["Zone"]==z]
             if not d.empty:
                 col = ZONE_COLORS.get(z, ("gray",""))[0]
                 ax.scatter(d["X"], d["Y"], label=z, color=col, s=100, edgecolors="white", alpha=0.8)
-        
         ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         st.pyplot(fig)
-    else:
-        st.info("データがありません")
+    else: st.info("データなし")
 
 # --- 4. チーム管理 ---
 elif app_mode == "👤 チーム管理":
@@ -413,7 +439,6 @@ elif app_mode == "👤 チーム管理":
         mems = st.session_state.players_db[tgt]
         rows = [{"No":k, "Pos":v} for k,v in mems.items()]
         st.dataframe(pd.DataFrame(rows), hide_index=True)
-        
         with st.form("reg"):
             c1,c2,c3 = st.columns([1,2,1])
             n = c1.text_input("No")
@@ -423,7 +448,6 @@ elif app_mode == "👤 チーム管理":
                 st.session_state.players_db[tgt][f"#{n} {nm}"] = p
                 save_players(st.session_state.players_db)
                 st.rerun()
-    
     with st.expander("チーム追加"):
         nt = st.text_input("チーム名")
         if st.button("追加"):
